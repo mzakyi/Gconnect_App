@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "388893342855",
+    "project_id": "sankatos-ai-app",
+    "storage_bucket": "sankatos-ai-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:388893342855:android:9391e0f928388625d38c22",
+        "android_client_info": {
+          "package_name": "com.GConnect.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC7WDdQrZLfqNaxhsQqRzQNoh2B9wgNeqA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:388893342855:android:480478186927b8d2d38c22",
+        "android_client_info": {
+          "package_name": "com.rtdalumni.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC7WDdQrZLfqNaxhsQqRzQNoh2B9wgNeqA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
