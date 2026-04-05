@@ -1,6 +1,5 @@
 import React from 'react';
 import { View, StyleSheet, Image, Dimensions, Share, Alert } from 'react-native';
-import { useActiveOrg } from '../../context/ActiveOrgContext';
 import { IconButton } from 'react-native-paper';
 import { downloadMediaFile } from '../../services/chatService';
 
@@ -11,8 +10,6 @@ export default function ImageViewerScreen({ route, navigation }) {
 
   const handleDownload = async () => {
     try {
-      console.log('Download image');
-      // Generate a filename from the URI or use timestamp
       const fileName = uri.split('/').pop() || `image_${Date.now()}.jpg`;
       await downloadMediaFile(uri, fileName);
     } catch (error) {
@@ -23,7 +20,6 @@ export default function ImageViewerScreen({ route, navigation }) {
 
   const handleShare = async () => {
     try {
-      console.log('Share image');
       await Share.share({
         message: 'Check out this image from RTD Alumni',
         url: uri,

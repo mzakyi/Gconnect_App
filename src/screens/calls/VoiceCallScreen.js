@@ -15,6 +15,7 @@ import { Audio } from 'expo-av';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../../../firebase.config';
 import { AuthContext } from '../../context/AuthContext';
+import { useActiveOrg } from '../../context/ActiveOrgContext';
 import {
   endCall,
   getLiveKitToken,

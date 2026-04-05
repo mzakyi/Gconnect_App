@@ -13,6 +13,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Audio } from 'expo-av';
 import { AuthContext } from '../../context/AuthContext';
+import { useActiveOrg } from '../../context/ActiveOrgContext';
 import {
   subscribeToCallStatus,
   endCall,

@@ -3,6 +3,8 @@
 //   1. Imported SuperAdmin-related helpers
 //   2. Added superAdminOrgs state + loader
 //   3. Added "Super Admin" card between Account card and Logout button
+//   4. FIX: Non-admin users can now delete their own account directly.
+//      Admin users are still directed to contact the administrator.
 //   All original functionality is completely preserved.
 
 import React, { useContext, useState, useEffect } from 'react';
@@ -29,7 +31,7 @@ export default function ProfileScreen({ navigation }) {
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [deleting, setDeleting] = useState(false);
 
-  // ── NEW: super admin state ──────────────────────────────────
+  // ── Super admin state ───────────────────────────────────────
   const [superAdminOrgs, setSuperAdminOrgs] = useState([]);
   const [loadingSuperAdmin, setLoadingSuperAdmin] = useState(false);
   // ───────────────────────────────────────────────────────────
@@ -38,7 +40,7 @@ export default function ProfileScreen({ navigation }) {
     if (organizationId) fetchAdminContact();
   }, [organizationId]);
 
-  // ── NEW: load super admin orgs if applicable ────────────────
+  // ── Load super admin orgs if applicable ────────────────────
   useEffect(() => {
     if (!user?.uid || !userProfile?.isSuperAdmin) return;
     setLoadingSuperAdmin(true);
@@ -126,26 +128,46 @@ export default function ProfileScreen({ navigation }) {
     ]);
   };
 
+  // ── FIX: Split delete flow based on admin status ────────────
   const handleDeleteAccount = () => {
-    if (!adminContact) {
-      Alert.alert('Help & Support', 'Admin contact information is not available at this moment.');
-      return;
+    if (userProfile?.isAdmin) {
+      // Admins must contact the administrator to delete their account
+      // (same behaviour as before)
+      if (!adminContact) {
+        Alert.alert('Help & Support', 'Admin contact information is not available at this moment.');
+        return;
+      }
+      const hasEmail = adminContact.email && adminContact.email !== 'Not available';
+      const hasPhone = adminContact.phone && adminContact.phone !== 'Not available';
+      if (!hasEmail && !hasPhone) {
+        Alert.alert('Help & Support', 'Admin contact information is not available at this time.');
+        return;
+      }
+      let message = `As an admin, to delete your account please contact support:\n\n`;
+      if (hasEmail) message += `📧 Email: ${adminContact.email}\n`;
+      if (hasPhone) message += `📞 Phone: ${adminContact.phone}\n`;
+      message += '\nPlease reach out to request account deletion.';
+      const buttons = [{ text: 'OK', style: 'default' }];
+      if (hasEmail) buttons.push({ text: 'Send Email', onPress: () => handleContactAdmin('email') });
+      if (hasPhone) buttons.push({ text: 'Call', onPress: () => handleContactAdmin('phone') });
+      Alert.alert('Delete Account', message, buttons);
+    } else {
+      // Regular (non-admin) members can delete their own account directly
+      Alert.alert(
+        'Delete Account',
+        'Are you sure you want to permanently delete your account? This action cannot be undone and all your data will be removed.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Continue',
+            style: 'destructive',
+            onPress: () => setShowDeleteModal(true),
+          },
+        ]
+      );
     }
-    const hasEmail = adminContact.email && adminContact.email !== 'Not available';
-    const hasPhone = adminContact.phone && adminContact.phone !== 'Not available';
-    if (!hasEmail && !hasPhone) {
-      Alert.alert('Help & Support', 'Admin contact information is not available at this time.');
-      return;
-    }
-    let message = `To delete your account, please contact the administrator:\n\n`;
-    if (hasEmail) message += `📧 Email: ${adminContact.email}\n`;
-    if (hasPhone) message += `📞 Phone: ${adminContact.phone}\n`;
-    message += '\nPlease reach out to request account deletion.';
-    const buttons = [{ text: 'OK', style: 'default' }];
-    if (hasEmail) buttons.push({ text: 'Send Email', onPress: () => handleContactAdmin('email') });
-    if (hasPhone) buttons.push({ text: 'Call', onPress: () => handleContactAdmin('phone') });
-    Alert.alert('Delete Account', message, buttons);
   };
+  // ───────────────────────────────────────────────────────────
 
   const executeAccountDeletion = async () => {
     if (deleteConfirmText.toLowerCase() !== 'delete') {
@@ -156,9 +178,13 @@ export default function ProfileScreen({ navigation }) {
     try {
       const batch = writeBatch(db);
       const userId = user.uid;
+
+      // Remove user's own posts
       const postsQuery = query(collection(db, 'organizations', organizationId, 'posts'), where('userId', '==', userId));
       const postsSnapshot = await getDocs(postsQuery);
-      postsSnapshot.forEach((doc) => { batch.delete(doc.ref); });
+      postsSnapshot.forEach((postDoc) => { batch.delete(postDoc.ref); });
+
+      // Remove user's comments from other posts
       const allPostsSnapshot = await getDocs(collection(db, 'organizations', organizationId, 'posts'));
       allPostsSnapshot.forEach((postDoc) => {
         const postData = postDoc.data();
@@ -169,9 +195,13 @@ export default function ProfileScreen({ navigation }) {
           }
         }
       });
+
+      // Remove user's stories
       const storiesQuery = query(collection(db, 'organizations', organizationId, 'stories'), where('userId', '==', userId));
       const storiesSnapshot = await getDocs(storiesQuery);
-      storiesSnapshot.forEach((doc) => { batch.delete(doc.ref); });
+      storiesSnapshot.forEach((storyDoc) => { batch.delete(storyDoc.ref); });
+
+      // Remove user's private chats and their messages
       const chatsQuery = query(collection(db, 'organizations', organizationId, 'privateChats'), where('participants', 'array-contains', userId));
       const chatsSnapshot = await getDocs(chatsQuery);
       for (const chatDoc of chatsSnapshot.docs) {
@@ -179,9 +209,18 @@ export default function ProfileScreen({ navigation }) {
         messagesSnapshot.forEach((msgDoc) => { batch.delete(msgDoc.ref); });
         batch.delete(chatDoc.ref);
       }
+
+      // Remove user doc from the org subcollection
+      const orgUserRef = doc(db, 'organizations', organizationId, 'users', userId);
+      batch.delete(orgUserRef);
+
+      // Remove top-level user doc
       const userDocRef = doc(db, 'users', userId);
       batch.delete(userDocRef);
+
       await batch.commit();
+
+      // Clean up storage files
       try {
         const userStorageFolders = ['profile_pictures', 'chat-media', 'stories', 'post-media'];
         for (const folder of userStorageFolders) {
@@ -198,7 +237,10 @@ export default function ProfileScreen({ navigation }) {
       } catch (storageError) {
         console.log('Storage cleanup error (non-critical):', storageError);
       }
+
+      // Finally delete the Firebase Auth user
       await deleteUser(user);
+
       Alert.alert('Account Deleted', 'Your account and all associated data have been permanently deleted.', [{ text: 'OK' }]);
     } catch (error) {
       console.error('Error deleting account:', error);
@@ -293,7 +335,6 @@ export default function ProfileScreen({ navigation }) {
               <Text style={styles.adminText}>Admin</Text>
             </View>
           )}
-          {/* ── NEW: Super Admin badge next to name ── */}
           {userProfile.isSuperAdmin && (
             <View style={styles.superAdminBadge}>
               <MaterialCommunityIcons name="crown" size={14} color="#F59E0B" />
@@ -321,7 +362,7 @@ export default function ProfileScreen({ navigation }) {
       </View>
 
       <View style={styles.cardsContainer}>
-        {/* Contact info card — unchanged */}
+        {/* Contact info card */}
         <Card style={styles.infoCard} elevation={2}>
           <Card.Content>
             <View style={styles.cardHeader}>
@@ -381,7 +422,7 @@ export default function ProfileScreen({ navigation }) {
           </Card.Content>
         </Card>
 
-        {/* ── NEW: Super Admin card — only shows for admins ─────────── */}
+        {/* Super Admin card — only shows for admins */}
         {userProfile.isAdmin && (
           <Card style={styles.superAdminCard} elevation={2}>
             <Card.Content>
@@ -390,7 +431,6 @@ export default function ProfileScreen({ navigation }) {
                 <Text variant="titleLarge" style={styles.cardTitle}>Super Admin</Text>
               </View>
 
-              {/* Current orgs summary */}
               {loadingSuperAdmin ? (
                 <ActivityIndicator size="small" color="#F59E0B" style={{ marginVertical: 10 }} />
               ) : (
@@ -434,9 +474,8 @@ export default function ProfileScreen({ navigation }) {
             </Card.Content>
           </Card>
         )}
-        {/* ────────────────────────────────────────────────────────── */}
 
-        {/* Account card — unchanged */}
+        {/* Account card */}
         <Card style={styles.infoCard} elevation={2}>
           <Card.Content>
             <View style={styles.cardHeader}>
@@ -486,7 +525,7 @@ export default function ProfileScreen({ navigation }) {
         <Text style={styles.versionText}>Version 1.0.0</Text>
       </View>
 
-      {/* Delete account modal — unchanged */}
+      {/* Delete account confirmation modal — used by non-admin users */}
       <Portal>
         <Modal
           visible={showDeleteModal}
@@ -499,7 +538,7 @@ export default function ProfileScreen({ navigation }) {
               <Text variant="headlineSmall" style={styles.modalTitle}>Confirm Account Deletion</Text>
             </View>
             <Text style={styles.modalText}>
-              This action is <Text style={styles.boldText}>permanent and irreversible</Text>.
+              This action is <Text style={styles.boldText}>permanent and irreversible</Text>. All your posts, messages, and data will be deleted.
             </Text>
             <Text style={styles.confirmInstructions}>
               To confirm, please type <Text style={styles.deleteWord}>delete</Text> below:
@@ -550,7 +589,6 @@ const styles = StyleSheet.create({
   name: { fontWeight: '700', color: '#263238' },
   adminBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF8DC', paddingHorizontal: 7, paddingVertical: 3, borderRadius: 10, gap: 3 },
   adminText: { color: '#FFD700', fontSize: 11, fontWeight: '700' },
-  // ── NEW styles ──
   superAdminBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF3E0', paddingHorizontal: 7, paddingVertical: 3, borderRadius: 10, gap: 3 },
   superAdminBadgeText: { color: '#F59E0B', fontSize: 11, fontWeight: '700' },
   superAdminCard: { marginBottom: 13, backgroundColor: '#fff', borderRadius: 14, borderLeftWidth: 3, borderLeftColor: '#F59E0B' },
@@ -566,7 +604,6 @@ const styles = StyleSheet.create({
     padding: 12, marginTop: 4,
   },
   superAdminButtonText: { flex: 1, fontSize: 14, fontWeight: '600', color: '#F59E0B' },
-  // ── end NEW styles ──
   occupation: { color: '#78909C', marginTop: 3, textAlign: 'center', fontSize: 15 },
   locationRow: { flexDirection: 'row', alignItems: 'center', marginTop: 7, gap: 3 },
   location: { color: '#78909C', fontSize: 13 },

@@ -33,18 +33,14 @@ import {
 } from '../../services/chatService';
 
 // ── Background wrapper — defined OUTSIDE the screen so it never remounts ────
-// This is the key fix for flickering: moving this outside means React treats
-// it as the same component across renders, so the ImageBackground never
-// unmounts/remounts when parent state changes (typing, messages, etc.)
 const ChatBackground = memo(({ backgroundImage, children }) => {
-  const [ready, setReady] = useState(!backgroundImage); // if no image, ready immediately
+  const [ready, setReady] = useState(!backgroundImage);
 
   useEffect(() => {
     if (!backgroundImage) {
       setReady(true);
       return;
     }
-    // Pre-fetch the image so it's in cache before we show it
     let cancelled = false;
     Image.prefetch(backgroundImage)
       .then(() => { if (!cancelled) setReady(true); })
@@ -58,7 +54,6 @@ const ChatBackground = memo(({ backgroundImage, children }) => {
         source={{ uri: backgroundImage }}
         style={{ flex: 1 }}
         resizeMode="cover"
-        // fadeDuration=0 prevents the built-in Android fade-in flicker
         fadeDuration={0}
       >
         {children}
@@ -66,8 +61,6 @@ const ChatBackground = memo(({ backgroundImage, children }) => {
     );
   }
 
-  // Solid background color while loading OR when no background set
-  // Using a fixed color avoids the flash-of-white during image load
   return (
     <View style={{ flex: 1, backgroundColor: '#ECE5DD' }}>
       {children}
@@ -163,7 +156,7 @@ const audioStyles = StyleSheet.create({
 export default function PrivateChatScreen({ navigation, route }) {
   const { chatId, otherUserId, otherUserName, otherUserAvatar } = route.params;
   const { user, userProfile } = useContext(AuthContext);
-const { activeOrgId: organizationId } = useActiveOrg();
+  const { activeOrgId: organizationId } = useActiveOrg();
   const { refreshBadges } = useBadges();
 
   const [messages, setMessages] = useState([]);
@@ -182,10 +175,6 @@ const { activeOrgId: organizationId } = useActiveOrg();
   const [highlightedMessageId, setHighlightedMessageId] = useState(null);
   const [isTyping, setIsTyping] = useState(false);
 
-  // ── Initialize backgroundImage from route params immediately ─────────────
-  // This prevents the flicker caused by starting null then getting the value
-  // from Firestore after mount. Route params are set by ChatListScreen which
-  // already has the backgroundImage value from its Firestore subscription.
   const [backgroundImage, setBackgroundImage] = useState(
     route.params?.backgroundImage ?? null
   );
@@ -193,6 +182,10 @@ const { activeOrgId: organizationId } = useActiveOrg();
   const flatListRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const recordingIntervalRef = useRef(null);
+  // ✅ FIX: Track previous message count so we only scroll when new messages arrive
+  const prevMessageCountRef = useRef(0);
+  // ✅ FIX: Track if this is the initial load so we scroll to bottom immediately
+  const isInitialLoadRef = useRef(true);
 
   // ── Live listener for background image ───────────────────────────────────
   useEffect(() => {
@@ -201,7 +194,6 @@ const { activeOrgId: organizationId } = useActiveOrg();
     const unsubscribe = onSnapshot(chatRef, (snap) => {
       if (snap.exists()) {
         const newBg = snap.data().backgroundImage ?? null;
-        // Only update if it actually changed to avoid unnecessary re-renders
         setBackgroundImage(prev => prev === newBg ? prev : newBg);
       }
     });
@@ -212,11 +204,28 @@ const { activeOrgId: organizationId } = useActiveOrg();
   useEffect(() => {
     if (!organizationId) return;
     const unsubscribe = subscribeToPrivateChatMessages(chatId, (msgs) => {
-      setMessages(msgs.filter(m => !m.deletedFor?.[user.uid]));
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 150);
+      const filtered = msgs.filter(m => !m.deletedFor?.[user.uid]);
+      setMessages(filtered);
+
+      // ✅ FIX: Only auto-scroll on initial load or when a new message arrives.
+      // Never scroll on unrelated re-renders (typing state, reactions, etc.)
+      const prevCount = prevMessageCountRef.current;
+      const newCount = filtered.length;
+
+      if (isInitialLoadRef.current || newCount > prevCount) {
+        // Small delay lets the FlatList finish rendering the new item first
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: !isInitialLoadRef.current });
+        }, 100);
+        isInitialLoadRef.current = false;
+      }
+
+      prevMessageCountRef.current = newCount;
     }, organizationId);
+
     markMessagesAsRead(chatId, user.uid, organizationId).then(() => refreshBadges());
     updateChatOnlineStatus(chatId, user.uid, true, organizationId);
+
     return () => {
       if (unsubscribe) unsubscribe();
       updateChatOnlineStatus(chatId, user.uid, false, organizationId);
@@ -387,6 +396,8 @@ const { activeOrgId: organizationId } = useActiveOrg();
         messageText, organizationId, 'text', null, null, replyingTo
       );
       setReplyingTo(null);
+      // ✅ Scroll after sending — the message listener will handle it,
+      // but we also do it here for instant feedback
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
     } catch (error) {
       Alert.alert('Error', 'Failed to send message');
@@ -672,7 +683,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 10 : 0}
       >
-        {/* ✅ ChatBackground is defined outside this component so it never remounts */}
+        {/* ✅ ChatBackground never remounts because it's defined outside this component */}
         <ChatBackground backgroundImage={backgroundImage}>
           <FlatList
             ref={flatListRef}
@@ -681,7 +692,9 @@ const { activeOrgId: organizationId } = useActiveOrg();
             renderItem={renderMessage}
             contentContainerStyle={styles.messageList}
             ListEmptyComponent={renderEmpty}
-            onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+            // ✅ FIX: Removed onContentSizeChange — it caused scroll-jumping on every render.
+            // Scrolling is now handled inside the messages listener and handleSend.
+            maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
             onScrollToIndexFailed={(info) => {
               setTimeout(() => flatListRef.current?.scrollToIndex({ index: info.index, animated: true }), 500);
             }}

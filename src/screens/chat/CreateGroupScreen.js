@@ -9,6 +9,7 @@ import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../../../firebase.config';
 import { createGroupChat } from '../../services/chatService';
 import * as ImagePicker from 'expo-image-picker';
+import { sendOrgCodeEmail } from '../../services/emailService';
 
 export default function CreateGroupScreen({ navigation }) {
   const { user, userProfile } = useContext(AuthContext);

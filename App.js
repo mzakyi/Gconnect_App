@@ -12,6 +12,9 @@ import * as Notifications from 'expo-notifications';
 import { navigationRef, navigate } from './src/navigation/navigationRef';
 import { ActiveOrgProvider } from './src/context/ActiveOrgContext';
 
+// ✅ ADD THIS (EmailJS init)
+import { initEmailService } from './src/services/emailService';
+
 try {
   const { registerGlobals } = require('@livekit/react-native');
   registerGlobals();
@@ -29,9 +32,6 @@ Notifications.setNotificationHandler({
   }),
 });
 
-// Handles cold-start: app was killed, user taps a notification to open it.
-// NotificationContext handles background (app minimized) taps via the
-// addNotificationResponseReceivedListener, so we only need this for killed state.
 function handleNotificationData(data) {
   if (!data?.type) return;
 
@@ -46,6 +46,7 @@ function handleNotificationData(data) {
         organizationId: data.orgId         || '',
       });
       break;
+
     case 'messages':
       if (data.chatId) {
         navigate('PrivateChat', { chatId: data.chatId, organizationId: data.orgId });
@@ -55,15 +56,19 @@ function handleNotificationData(data) {
         navigate('Chat');
       }
       break;
+
     case 'posts':
       navigate('Feed');
       break;
+
     case 'events':
       navigate('Events');
       break;
+
     case 'announcements':
       navigate('Announcements');
       break;
+
     default:
       break;
   }
@@ -73,10 +78,8 @@ function AppWithNavigation() {
   const { setNavigationRef } = useContext(CallContext);
 
   useEffect(() => {
-    // Cold-start: check if app was opened by tapping a notification
     Notifications.getLastNotificationResponseAsync().then(response => {
       if (response?.notification?.request?.content?.data) {
-        // Delay so NavigationContainer has time to mount and become ready
         setTimeout(() => {
           handleNotificationData(response.notification.request.content.data);
         }, 1000);
@@ -101,13 +104,18 @@ function AppWithNavigation() {
 
 export default function App() {
   useEffect(() => {
-    const requestPermissions = async () => {
+    const setup = async () => {
+      // ✅ INIT EMAILJS (THIS WAS MISSING)
+      initEmailService();
+
+      // ✅ Notifications permission
       const { status } = await Notifications.requestPermissionsAsync();
       if (status !== 'granted') {
         console.log('Notification permissions not granted');
       }
     };
-    requestPermissions();
+
+    setup();
   }, []);
 
   return (
@@ -115,13 +123,13 @@ export default function App() {
       <OrganizationProvider>
         <AuthProvider>
           <ActiveOrgProvider> 
-          <NotificationProvider>
-            <BadgeProvider>
-              <CallProvider>
-                <AppWithNavigation />
-              </CallProvider>
-            </BadgeProvider>
-          </NotificationProvider>
+            <NotificationProvider>
+              <BadgeProvider>
+                <CallProvider>
+                  <AppWithNavigation />
+                </CallProvider>
+              </BadgeProvider>
+            </NotificationProvider>
           </ActiveOrgProvider> 
         </AuthProvider>
       </OrganizationProvider>

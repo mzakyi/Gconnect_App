@@ -99,6 +99,8 @@ const { activeOrgId: organizationId } = useActiveOrg();
 
   const flatListRef          = useRef(null);
   const recordingIntervalRef = useRef(null);
+  const prevMessageCountRef  = useRef(0);  
+  const isInitialLoadRef     = useRef(true); 
 
   // ── Live listener for group name + background + pinned message ───────────
   useEffect(() => {
@@ -123,7 +125,23 @@ const { activeOrgId: organizationId } = useActiveOrg();
   useEffect(() => {
     if (!organizationId) return;
     const unsubscribe = subscribeToGroupChatMessages(groupId, (msgs) => {
-      setMessages(msgs.filter(m => !m.deletedFor?.[user.uid]));
+      const filtered = msgs.filter(m => !m.deletedFor?.[user.uid]);
+      setMessages(filtered);
+
+      // ✅ FIX: Only scroll on initial load or when a genuinely new message arrives.
+      // Reactions, edits, and other Firestore updates change the same messages array
+      // but do NOT increase its length — we skip scrolling for those.
+      const prevCount = prevMessageCountRef.current;
+      const newCount  = filtered.length;
+
+      if (isInitialLoadRef.current || newCount > prevCount) {
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: !isInitialLoadRef.current });
+        }, 100);
+        isInitialLoadRef.current = false;
+      }
+
+      prevMessageCountRef.current = newCount;
     }, organizationId);
     markGroupMessagesAsRead(groupId, user.uid, organizationId).then(() => refreshBadges());
     return () => { if (unsubscribe) unsubscribe(); };
@@ -247,6 +265,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
         messageText, organizationId, 'text', null, null, replyingTo
       );
       setReplyingTo(null);
+      // ✅ Scroll after sending for instant feedback; listener also handles it
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
     } catch (error) {
       Alert.alert('Error', 'Failed to send message');
@@ -536,12 +555,13 @@ const { activeOrgId: organizationId } = useActiveOrg();
         >
         {/* ✅ ChatBackground is defined outside this component so it never remounts */}
         <ChatBackground backgroundImage={backgroundImage}>
-          <FlatList
+       <FlatList
             ref={flatListRef}
             data={messages}
             keyExtractor={(item) => item.id}
             renderItem={renderMessage}
             contentContainerStyle={styles.messageList}
+            maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
             onScrollToIndexFailed={(info) => {
               setTimeout(() => flatListRef.current?.scrollToIndex({ index: info.index, animated: true }), 500);
             }}

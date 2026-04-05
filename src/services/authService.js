@@ -19,53 +19,71 @@ const getUserDocPath = (organizationId, userId) => {
 // ================== SIGN UP ==================
 export const signUp = async (email, password, profileData) => {
   console.log('🔵 [SIGNUP] Started for email:', email);
-  
-  const { organizationId, organizationName, ...userData } = profileData;
 
-  if (!organizationId) {
+  const { organizationId, organizationName, groupName, ...userData } = profileData;
+
+  const isCreatingGroup = !!groupName && !organizationId;
+
+  if (!isCreatingGroup && !organizationId) {
     throw new Error('Organization ID required');
   }
 
-  // ✅ Tell AuthContext to stay out of the way during signup
   global.signupInProgress = true;
 
-  // Step 1: Create Firebase Auth user
   let userCredential;
   try {
     userCredential = await createUserWithEmailAndPassword(auth, email, password);
     console.log('✅ [SIGNUP] Auth user created! UID:', userCredential.user.uid);
   } catch (authErr) {
     global.signupInProgress = false;
-    console.error('🔴 [SIGNUP] Auth creation failed:', authErr.code, authErr.message);
     throw authErr;
   }
 
   const user = userCredential.user;
 
-  // Force token refresh so Firestore recognizes the new auth session
   try {
     await user.getIdToken(true);
-    console.log('✅ [SIGNUP] Token refreshed, UID:', user.uid);
   } catch (tokenErr) {
     console.warn('🟡 [SIGNUP] Could not refresh token:', tokenErr.message);
   }
 
   try {
-    // Step 2: Read org doc to check if first user
-    console.log('🔵 [SIGNUP] Fetching org doc:', organizationId);
-    const orgDocRef = doc(db, 'organizations', organizationId);
+    let finalOrgId = organizationId;
+    let finalOrgName = organizationName;
+    let generatedOrgCode = null;
+
+    // ── CREATE GROUP FLOW ──────────────────────────────────────────────
+    if (isCreatingGroup) {
+      console.log('🔵 [SIGNUP] Creating new organization:', groupName);
+
+      const { organizationService } = require('./organizationService');
+      const orgResult = await organizationService.createOrganization(groupName, user.uid);
+
+      if (!orgResult.success) {
+        throw new Error(orgResult.error || 'Failed to create organization');
+      }
+
+      finalOrgId = orgResult.organizationId;
+      finalOrgName = orgResult.organizationName;
+      generatedOrgCode = orgResult.orgCode;
+
+      console.log('✅ [SIGNUP] Org created:', finalOrgId, '| code:', generatedOrgCode);
+    }
+
+    // ── READ ORG DOC ───────────────────────────────────────────────────
+    const orgDocRef = doc(db, 'organizations', finalOrgId);
     const orgDoc = await getDoc(orgDocRef);
-    console.log('✅ [SIGNUP] Org doc fetched, exists:', orgDoc.exists());
     const orgData = orgDoc.exists() ? orgDoc.data() : {};
 
-    const isFirstUser = !orgData.firstUserUid;
+    // Creator is always admin + approved. Joiners are pending.
+    const isFirstUser = isCreatingGroup || !orgData.firstUserUid;
     const isAdmin = isFirstUser;
-    const status = 'pending';
-    console.log('🔵 [SIGNUP] isFirstUser:', isFirstUser, '| isAdmin:', isAdmin, '| status:', status);
+    const status = isFirstUser ? 'approved' : 'pending';
 
-    // Step 3: Write org-scoped user doc
-    console.log('🔵 [SIGNUP] Writing org user doc to: organizations/' + organizationId + '/users/' + user.uid);
-    await setDoc(getUserDocPath(organizationId, user.uid), {
+    console.log('🔵 [SIGNUP] isFirstUser:', isFirstUser, '| status:', status);
+
+    // ── WRITE ORG-SCOPED USER DOC ──────────────────────────────────────
+    await setDoc(getUserDocPath(finalOrgId, user.uid), {
       uid: user.uid,
       email,
       firstName: userData.firstName || '',
@@ -80,49 +98,57 @@ export const signUp = async (email, password, profileData) => {
       status,
       banned: false,
       isBanned: false,
-      organizationId,
-      organizationName,
+      organizationId: finalOrgId,
+      organizationName: finalOrgName,
       createdAt: serverTimestamp(),
-      lastSeen: serverTimestamp()
+      lastSeen: serverTimestamp(),
     });
-    console.log('✅ [SIGNUP] Org user doc written successfully');
 
-    // Step 4: Write top-level user doc
-    console.log('🔵 [SIGNUP] Writing top-level user doc to: users/' + user.uid);
+    console.log('✅ [SIGNUP] Org user doc written');
+
+    // ── WRITE TOP-LEVEL USER DOC ───────────────────────────────────────
     await setDoc(doc(db, 'users', user.uid), {
       uid: user.uid,
       email,
-      organizationId,
+      organizationId: finalOrgId,
       status,
       createdAt: serverTimestamp(),
     });
-    console.log('✅ [SIGNUP] Top-level user doc written successfully');
 
-    // Step 5: Stamp org with firstUserUid if first user
-    if (isFirstUser) {
+    console.log('✅ [SIGNUP] Top-level user doc written');
+
+    // ── STAMP FIRST USER ON ORG (join flow only) ───────────────────────
+    if (isFirstUser && !isCreatingGroup) {
       try {
         await updateDoc(orgDocRef, { firstUserUid: user.uid });
-        console.log('✅ [SIGNUP] Org firstUserUid stamped');
       } catch (e) {
-        console.warn('🟡 [SIGNUP] Could not stamp org firstUserUid (non-fatal):', e.message);
+        console.warn('🟡 Could not stamp firstUserUid:', e.message);
       }
     }
 
-    // Step 6: Sign out — pending admin approval
+    // ── SIGN OUT (user must log in manually after) ─────────────────────
     await firebaseSignOut(auth);
     global.signupInProgress = false;
-    console.log('✅ [SIGNUP] Complete — signed out, pending approval');
 
-    return { success: true, user: userCredential.user, status, isAdmin };
+    console.log('✅ [SIGNUP] Complete — signed out');
+
+    return {
+      success: true,
+      user: userCredential.user,
+      status,
+      isAdmin,
+      orgCode: generatedOrgCode,
+      organizationId: finalOrgId,
+      organizationName: finalOrgName,
+    };
 
   } catch (err) {
     global.signupInProgress = false;
-    console.error('🔴 [SIGNUP] Failed - code:', err.code, 'message:', err.message);
+    console.error('🔴 [SIGNUP] Failed:', err.message);
     try {
       await user.delete();
-      console.log('🟡 [SIGNUP] Auth user deleted for clean retry');
     } catch (deleteErr) {
-      console.warn('🟡 [SIGNUP] Could not delete auth user:', deleteErr.message);
+      console.warn('🟡 Could not delete auth user:', deleteErr.message);
     }
     throw new Error(err.message);
   }

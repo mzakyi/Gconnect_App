@@ -4,9 +4,10 @@ import {
   View, FlatList, StyleSheet, Alert, TouchableOpacity, RefreshControl,
   Modal, KeyboardAvoidingView, ActivityIndicator, Platform,
   Dimensions, Linking, ScrollView, InteractionManager, Animated,
-  StatusBar, SafeAreaView
+  StatusBar, SafeAreaView, TextInput as RNTextInput
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Haptics from 'expo-haptics';
 import YoutubeIframe from 'react-native-youtube-iframe';
 import {
   Text, Card, IconButton, TextInput, Avatar, Chip, Surface,
@@ -32,6 +33,9 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const MAX_MEDIA_ITEMS = 4;
 const STORY_IMAGE_DURATION = 5000;
 
+// ─── Emoji reactions config ───────────────────────────────────────────────────
+const REACTIONS = ['❤️', '🔥', '👏', '😂', '😮', '💯'];
+
 // ─── Pin helpers ──────────────────────────────────────────────────────────────
 
 const getUserPinDocRef = (organizationId, userId, postId) =>
@@ -47,15 +51,9 @@ const subscribeToUserPins = (organizationId, userId, callback) => {
 };
 
 const togglePinPost = async ({
-  postId,
-  postOwnerId,
-  currentlyPinned,
-  organizationId,
-  actingUserId,
-  actingUserIsAdmin,
+  postId, postOwnerId, currentlyPinned, organizationId, actingUserId, actingUserIsAdmin,
 }) => {
   const isAdminPinningOwnPost = actingUserIsAdmin && postOwnerId === actingUserId;
-
   if (isAdminPinningOwnPost) {
     const postRef = doc(db, 'organizations', organizationId, 'posts', postId);
     await updateDoc(postRef, { isAdminPinned: !currentlyPinned });
@@ -78,6 +76,42 @@ const sortWithPinned = (arr, userPinSet) =>
     };
     return rank(b) - rank(a);
   });
+
+// ─── Skeleton loader ──────────────────────────────────────────────────────────
+const SkeletonPulse = memo(() => {
+  const anim = useRef(new Animated.Value(0.3)).current;
+  useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(anim, { toValue: 1, duration: 800, useNativeDriver: true }),
+        Animated.timing(anim, { toValue: 0.3, duration: 800, useNativeDriver: true }),
+      ])
+    ).start();
+  }, []);
+  return (
+    <View style={sk.card}>
+      <View style={sk.header}>
+        <Animated.View style={[sk.avatar, { opacity: anim }]} />
+        <View style={sk.headerText}>
+          <Animated.View style={[sk.line, { width: '60%', opacity: anim }]} />
+          <Animated.View style={[sk.line, { width: '35%', marginTop: 6, opacity: anim }]} />
+        </View>
+      </View>
+      <Animated.View style={[sk.line, { width: '90%', marginTop: 14, opacity: anim }]} />
+      <Animated.View style={[sk.line, { width: '75%', marginTop: 8, opacity: anim }]} />
+      <Animated.View style={[sk.mediaBlock, { opacity: anim }]} />
+    </View>
+  );
+});
+
+const sk = StyleSheet.create({
+  card: { backgroundColor: '#fff', borderRadius: 16, marginHorizontal: 16, marginVertical: 6, padding: 14 },
+  header: { flexDirection: 'row', alignItems: 'center' },
+  avatar: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#ECEFF1' },
+  headerText: { flex: 1, marginLeft: 10 },
+  line: { height: 12, borderRadius: 6, backgroundColor: '#ECEFF1' },
+  mediaBlock: { height: 180, borderRadius: 10, backgroundColor: '#ECEFF1', marginTop: 14 },
+});
 
 // ─── Memoized story thumbnail ─────────────────────────────────────────────────
 const StoryThumbnail = memo(({ item, user, onPress }) => {
@@ -141,15 +175,20 @@ const StoryThumbnail = memo(({ item, user, onPress }) => {
 // ─── Isolated Story Viewer ────────────────────────────────────────────────────
 const StoryViewer = memo(({
   visible, storyGroup, initialIndex, userId, isAdmin, allUsers,
-  onClose, onStoryView, onDeleteStory, getTimeAgo
+  onClose, onStoryView, onDeleteStory, getTimeAgo,
+  organizationId, userProfile,
 }) => {
   const insets = useSafeAreaInsets();
-
   const [currentIndex, setCurrentIndex] = useState(initialIndex || 0);
   const [paused, setPaused] = useState(false);
   const [loading, setLoading] = useState(true);
   const [viewersModalVisible, setViewersModalVisible] = useState(false);
   const [viewers, setViewers] = useState([]);
+
+  // ── NEW: story likes state ────────────────────────────────────────────────
+  const [storyLikesModalVisible, setStoryLikesModalVisible] = useState(false);
+  const [storyLikers, setStoryLikers] = useState([]);
+  const [likingStory, setLikingStory] = useState(false);
 
   const storyProgressAnim = useRef(new Animated.Value(0)).current;
   const storyProgressRef = useRef(0);
@@ -166,6 +205,13 @@ const StoryViewer = memo(({
 
   const currentStory = storyGroup?.stories[currentIndex];
   const isOwnStory = currentStory?.userId === userId;
+
+  // ── Derived: has current user liked this story? ───────────────────────────
+  const hasLikedStory = useMemo(() =>
+    currentStory?.likes?.includes(userId) ?? false,
+    [currentStory, userId]
+  );
+  const storyLikeCount = currentStory?.likeCount || currentStory?.likes?.length || 0;
 
   useEffect(() => {
     if (visible && storyGroup) {
@@ -257,7 +303,6 @@ const StoryViewer = memo(({
       storyProgressRef.current = val;
       pausedAtRef.current = val;
     });
-    videoRef.current?.pauseAsync?.();
     requestAnimationFrame(() => { setPaused(true); });
   }, [stopAnimation, storyProgressAnim]);
 
@@ -280,7 +325,6 @@ const StoryViewer = memo(({
       });
       animationRef.current = anim;
       anim.start(({ finished }) => { if (finished) handleNext(); });
-      videoRef.current?.playAsync?.();
     }
   }, [currentStory, storyProgressAnim, handleNext]);
 
@@ -291,7 +335,6 @@ const StoryViewer = memo(({
       storyProgressRef.current = val;
       pausedAtRef.current = val;
     });
-    videoRef.current?.pauseAsync?.().catch(() => {});
     const viewerUids = currentStory.views || [];
     const viewerList = viewerUids.map(uid => viewersMap.get(uid)).filter(Boolean);
     setPaused(true);
@@ -322,7 +365,6 @@ const StoryViewer = memo(({
         });
         animationRef.current = anim;
         anim.start(({ finished }) => { if (finished) handleNext(); });
-        videoRef.current?.playAsync?.().catch(() => {});
       }
     }
   }, [currentStory, storyProgressAnim, handleNext]);
@@ -338,6 +380,74 @@ const StoryViewer = memo(({
       }
     });
   }, [currentStory, currentIndex, onDeleteStory, onClose, goToIndex]);
+
+  // ── NEW: handle story like ────────────────────────────────────────────────
+  const handleStoryLike = useCallback(async () => {
+    if (!currentStory || likingStory) return;
+    setLikingStory(true);
+    try {
+      const storyRef = doc(db, 'organizations', organizationId, 'stories', currentStory.id);
+      if (hasLikedStory) {
+        await updateDoc(storyRef, {
+          likes: arrayRemove(userId),
+          likeCount: increment(-1),
+        });
+      } else {
+        await updateDoc(storyRef, {
+          likes: arrayUnion(userId),
+          likeCount: increment(1),
+        });
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      }
+    } catch (e) {
+      console.error('handleStoryLike:', e);
+    } finally {
+      setLikingStory(false);
+    }
+  }, [currentStory, hasLikedStory, userId, organizationId, likingStory]);
+
+  // ── NEW: open story likers modal ──────────────────────────────────────────
+  const handleShowStoryLikes = useCallback(() => {
+    if (!currentStory || storyLikeCount === 0) return;
+    stopAnimation();
+    storyProgressAnim.stopAnimation(val => {
+      storyProgressRef.current = val;
+      pausedAtRef.current = val;
+    });
+    const likerUids = currentStory.likes || [];
+    const likerList = likerUids.map(uid => viewersMap.get(uid)).filter(Boolean);
+    setPaused(true);
+    setStoryLikers(likerList);
+    setStoryLikesModalVisible(true);
+  }, [currentStory, storyLikeCount, viewersMap, stopAnimation, storyProgressAnim]);
+
+  // ── NEW: close story likers modal and resume ──────────────────────────────
+  const handleCloseStoryLikes = useCallback(() => {
+    setStoryLikesModalVisible(false);
+    setStoryLikers([]);
+    setPaused(false);
+    if (!currentStory) return;
+    const elapsed = pausedAtRef.current;
+    if (currentStory.mediaType === 'image') {
+      const remaining = STORY_IMAGE_DURATION * (1 - elapsed);
+      if (remaining > 0) {
+        const anim = Animated.timing(storyProgressAnim, {
+          toValue: 1, duration: remaining, useNativeDriver: false,
+        });
+        animationRef.current = anim;
+        anim.start(({ finished }) => { if (finished) handleNext(); });
+      }
+    } else {
+      const remaining = videoDurationRef.current * (1 - elapsed);
+      if (remaining > 0) {
+        const anim = Animated.timing(storyProgressAnim, {
+          toValue: 1, duration: remaining, useNativeDriver: false,
+        });
+        animationRef.current = anim;
+        anim.start(({ finished }) => { if (finished) handleNext(); });
+      }
+    }
+  }, [currentStory, storyProgressAnim, handleNext]);
 
   if (!visible || !storyGroup || !currentStory) return null;
 
@@ -405,19 +515,22 @@ const StoryViewer = memo(({
           {currentStory.mediaType === 'video' ? (
             <Video
               ref={videoRef}
-              source={{ uri: currentStory.mediaUrl, overrideFileExtensionAndroid: 'mp4' }}
+              source={{
+                uri: currentStory.mediaUrl,
+                overrideFileExtensionAndroid: 'mp4',
+              }}
               style={sv.media}
-              resizeMode="cover"
+              resizeMode="contain"
               isLooping={false}
               useNativeControls={false}
               rate={1.0}
               volume={1.0}
-              progressUpdateIntervalMillis={250}
+              shouldPlay={!paused}
+              progressUpdateIntervalMillis={100}
               onReadyForDisplay={(e) => {
                 setLoading(false);
                 const duration = e?.status?.durationMillis || 10000;
                 startVideoProgress(duration);
-                videoRef.current?.playAsync?.();
               }}
               onPlaybackStatusUpdate={(status) => {
                 if (status.isLoaded && status.didJustFinish) handleNext();
@@ -428,7 +541,7 @@ const StoryViewer = memo(({
             <ExpoImage
               source={{ uri: currentStory.mediaUrl }}
               style={sv.media}
-              contentFit="cover"
+              contentFit="contain"
               cachePolicy="memory-disk"
               transition={100}
               onLoad={() => {
@@ -451,8 +564,43 @@ const StoryViewer = memo(({
             <MaterialCommunityIcons name="pause" size={54} color="rgba(255,255,255,0.8)" />
           </View>
         )}
+
+        {/* ── NEW: Story like bar at the bottom ─────────────────────────── */}
+        <View style={[sv.storyLikeBar, { paddingBottom: insets.bottom + 16 }]}>
+          {/* Like count — tappable to show likers */}
+          {storyLikeCount > 0 && (
+            <TouchableOpacity
+              style={sv.storyLikeCountBtn}
+              onPress={handleShowStoryLikes}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <MaterialCommunityIcons name="heart" size={14} color="#EC407A" />
+              <Text style={sv.storyLikeCountText}>{storyLikeCount}</Text>
+            </TouchableOpacity>
+          )}
+          <View style={{ flex: 1 }} />
+          {/* Like button — only shown for other people's stories */}
+          {!isOwnStory && (
+            <TouchableOpacity
+              style={[sv.storyLikeBtn, hasLikedStory && sv.storyLikeBtnActive]}
+              onPress={handleStoryLike}
+              disabled={likingStory}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <MaterialCommunityIcons
+                name={hasLikedStory ? 'heart' : 'heart-outline'}
+                size={22}
+                color={hasLikedStory ? '#EC407A' : '#fff'}
+              />
+              <Text style={[sv.storyLikeBtnText, hasLikedStory && { color: '#EC407A' }]}>
+                {hasLikedStory ? 'Liked' : 'Like'}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
 
+      {/* Viewers modal */}
       <Modal
         visible={viewersModalVisible}
         onRequestClose={handleCloseViewers}
@@ -484,6 +632,47 @@ const StoryViewer = memo(({
               <View style={styles.emptyComments}>
                 <MaterialCommunityIcons name="eye-outline" size={54} color="#CFD8DC" />
                 <Text style={styles.emptyCommentsText}>No viewers yet</Text>
+              </View>
+            }
+          />
+        </View>
+      </Modal>
+
+      {/* ── NEW: Story likes modal ─────────────────────────────────────────── */}
+      <Modal
+        visible={storyLikesModalVisible}
+        onRequestClose={handleCloseStoryLikes}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        <View style={{ flex: 1, backgroundColor: '#fff' }}>
+          <Surface style={styles.commentModalHeader} elevation={1}>
+            <IconButton icon="arrow-left" size={22} onPress={handleCloseStoryLikes} />
+            <Text variant="titleMedium" style={styles.modalTitle}>
+              Likes ({storyLikers.length})
+            </Text>
+            <View style={{ width: 36 }} />
+          </Surface>
+          <FlatList
+            data={storyLikers}
+            keyExtractor={item => item.id || item.uid}
+            renderItem={({ item }) => (
+              <View style={styles.likeUserItem}>
+                {item.profilePicture
+                  ? <ExpoImage source={{ uri: item.profilePicture }} style={{ width: 42, height: 42, borderRadius: 21, marginRight: 11 }} cachePolicy="memory-disk" />
+                  : <Avatar.Text size={42} label={`${item.firstName?.[0] || ''}${item.lastName?.[0] || ''}`} style={styles.likeAvatar} />}
+                <View style={styles.likeUserInfo}>
+                  <Text style={styles.likeUserName}>{item.firstName} {item.lastName}</Text>
+                  <Text style={styles.likeUserOccupation}>{item.occupation || 'Member'}</Text>
+                </View>
+                <MaterialCommunityIcons name="heart" size={18} color="#EC407A" />
+              </View>
+            )}
+            contentContainerStyle={{ padding: 13 }}
+            ListEmptyComponent={
+              <View style={styles.emptyComments}>
+                <MaterialCommunityIcons name="heart-outline" size={54} color="#CFD8DC" />
+                <Text style={styles.emptyCommentsText}>No likes yet</Text>
               </View>
             }
           />
@@ -530,6 +719,32 @@ const sv = StyleSheet.create({
   navLeft: { position: 'absolute', left: 0, top: 0, bottom: 0, width: SCREEN_WIDTH * 0.35, zIndex: 10 },
   navRight: { position: 'absolute', right: 0, top: 0, bottom: 0, width: SCREEN_WIDTH * 0.65, zIndex: 10 },
   pausedOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.3)', zIndex: 11 },
+  // ── NEW: story like bar ───────────────────────────────────────────────────
+  storyLikeBar: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 18, paddingTop: 14,
+    zIndex: 20,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
+  storyLikeCountBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: 12, paddingVertical: 7,
+    borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
+  },
+  storyLikeCountText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  storyLikeBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 7,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: 16, paddingVertical: 9,
+    borderRadius: 22, borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)',
+  },
+  storyLikeBtnActive: {
+    backgroundColor: 'rgba(236,64,122,0.15)',
+    borderColor: '#EC407A',
+  },
+  storyLikeBtnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
 });
 
 // ─── Full-screen Media Viewer Modal ──────────────────────────────────────────
@@ -539,9 +754,7 @@ const MediaViewerModal = memo(({ visible, post, initialIndex, onClose }) => {
   const flatListRef = useRef(null);
 
   useEffect(() => {
-    if (visible) {
-      setCurrentIndex(initialIndex || 0);
-    }
+    if (visible) setCurrentIndex(initialIndex || 0);
   }, [visible, initialIndex]);
 
   if (!visible || !post) return null;
@@ -550,47 +763,27 @@ const MediaViewerModal = memo(({ visible, post, initialIndex, onClose }) => {
   const total = media.length;
 
   return (
-    <Modal
-      visible={visible}
-      onRequestClose={onClose}
-      animationType="fade"
-      statusBarTranslucent
-      hardwareAccelerated
-    >
+    <Modal visible={visible} onRequestClose={onClose} animationType="fade" statusBarTranslucent hardwareAccelerated>
       <View style={mvStyles.container}>
         <StatusBar hidden />
-
-        {/* ── Top bar ── */}
         <View style={[mvStyles.topBar, { paddingTop: insets.top + 8 }]}>
           <TouchableOpacity style={mvStyles.backButton} onPress={onClose} hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}>
             <View style={mvStyles.backButtonInner}>
               <MaterialCommunityIcons name="arrow-left" size={22} color="#fff" />
             </View>
           </TouchableOpacity>
-
           <View style={mvStyles.titleArea}>
-            {post.userName ? (
-              <Text style={mvStyles.titleText} numberOfLines={1}>{post.userName}</Text>
-            ) : null}
-            {total > 1 && (
-              <Text style={mvStyles.counterText}>{currentIndex + 1} / {total}</Text>
-            )}
+            {post.userName ? <Text style={mvStyles.titleText} numberOfLines={1}>{post.userName}</Text> : null}
+            {total > 1 && <Text style={mvStyles.counterText}>{currentIndex + 1} / {total}</Text>}
           </View>
         </View>
-
-        {/* ── Dot indicators (multi-image) ── */}
         {total > 1 && (
           <View style={mvStyles.dotsRow}>
             {media.map((_, i) => (
-              <View
-                key={i}
-                style={[mvStyles.dot, i === currentIndex && mvStyles.dotActive]}
-              />
+              <View key={i} style={[mvStyles.dot, i === currentIndex && mvStyles.dotActive]} />
             ))}
           </View>
         )}
-
-        {/* ── Media pager ── */}
         <FlatList
           ref={flatListRef}
           data={media}
@@ -614,6 +807,9 @@ const MediaViewerModal = memo(({ visible, post, initialIndex, onClose }) => {
                   useNativeControls
                   shouldPlay
                   isLooping={false}
+                  rate={1.0}
+                  volume={1.0}
+                  progressUpdateIntervalMillis={100}
                 />
               ) : (
                 <ExpoImage
@@ -626,8 +822,6 @@ const MediaViewerModal = memo(({ visible, post, initialIndex, onClose }) => {
             </View>
           )}
         />
-
-        {/* ── Bottom close bar ── */}
         <View style={[mvStyles.bottomBar, { paddingBottom: insets.bottom + 12 }]}>
           <TouchableOpacity style={mvStyles.closeButton} onPress={onClose}>
             <MaterialCommunityIcons name="close" size={18} color="#fff" />
@@ -640,121 +834,323 @@ const MediaViewerModal = memo(({ visible, post, initialIndex, onClose }) => {
 });
 
 const mvStyles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#000' },
+  topBar: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingBottom: 10 },
+  backButton: { zIndex: 21 },
+  backButtonInner: { width: 42, height: 42, borderRadius: 21, backgroundColor: 'rgba(0,0,0,0.65)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)', alignItems: 'center', justifyContent: 'center' },
+  titleArea: { flex: 1, marginLeft: 12 },
+  titleText: { color: '#fff', fontSize: 15, fontWeight: '700', textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4 },
+  counterText: { color: 'rgba(255,255,255,0.75)', fontSize: 12, marginTop: 2 },
+  dotsRow: { position: 'absolute', bottom: 72, left: 0, right: 0, zIndex: 20, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6 },
+  dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.4)' },
+  dotActive: { backgroundColor: '#fff', width: 18, borderRadius: 3 },
+  page: { width: SCREEN_WIDTH, height: SCREEN_HEIGHT, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' },
+  mediaFill: { width: SCREEN_WIDTH, height: SCREEN_HEIGHT },
+  bottomBar: { position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 20, alignItems: 'center', paddingTop: 10, backgroundColor: 'rgba(0,0,0,0.45)' },
+  closeButton: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.15)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)', paddingHorizontal: 22, paddingVertical: 10, borderRadius: 24 },
+  closeButtonText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+});
+
+// ─── Emoji Reaction Picker (now with full keyboard support) ───────────────────
+//
+// CHANGE: Added an "emoji keyboard" button as the last item. When tapped it
+// opens a hidden RNTextInput set to emoji keyboard (keyboardType not needed —
+// the trick is emojiKeyboard={true} on newer RN, but the reliable cross-platform
+// approach is to use a regular TextInput with returnKeyType="done" and let the
+// OS emoji picker supply characters, then we grab the first emoji entered).
+//
+const ReactionPicker = memo(({ visible, onSelect, onClose, postId }) => {
+  const scaleAnim = useRef(new Animated.Value(0)).current;
+  const hiddenInputRef = useRef(null);
+  const [showEmojiInput, setShowEmojiInput] = useState(false);
+  const [emojiInputVal, setEmojiInputVal] = useState('');
+
+  useEffect(() => {
+    if (visible) {
+      setShowEmojiInput(false);
+      setEmojiInputVal('');
+      Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, tension: 200, friction: 10 }).start();
+    } else {
+      scaleAnim.setValue(0);
+      setShowEmojiInput(false);
+      setEmojiInputVal('');
+    }
+  }, [visible]);
+
+  // When user types into the hidden input, grab first emoji-like character
+  const handleEmojiInputChange = useCallback((text) => {
+    setEmojiInputVal(text);
+    // Extract the first emoji (surrogate pairs / emoji sequences)
+    // Emoji regex — matches most emoji including ZWJ sequences
+    const emojiRegex = /\p{Emoji_Presentation}|\p{Extended_Pictographic}/gu;
+    const found = text.match(emojiRegex);
+    if (found && found.length > 0) {
+      const picked = found[0];
+      setShowEmojiInput(false);
+      setEmojiInputVal('');
+      hiddenInputRef.current?.blur();
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      onSelect(picked);
+    }
+  }, [onSelect]);
+
+  const handleOpenKeyboard = useCallback(() => {
+    setShowEmojiInput(true);
+    setEmojiInputVal('');
+    // Small delay so the input mounts before we focus it
+    setTimeout(() => hiddenInputRef.current?.focus(), 80);
+  }, []);
+
+  if (!visible) return null;
+
+  return (
+    <View>
+      <Animated.View style={[rp.container, { transform: [{ scale: scaleAnim }] }]}>
+        {REACTIONS.map(emoji => (
+          <TouchableOpacity
+            key={emoji}
+            style={rp.emojiBtn}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              onSelect(emoji);
+            }}
+          >
+            <Text style={rp.emoji}>{emoji}</Text>
+          </TouchableOpacity>
+        ))}
+        {/* ── NEW: open full emoji keyboard ── */}
+        <TouchableOpacity
+          style={[rp.emojiBtn, rp.keyboardBtn]}
+          onPress={handleOpenKeyboard}
+        >
+          <MaterialCommunityIcons name="emoticon-plus-outline" size={24} color="#5C6BC0" />
+        </TouchableOpacity>
+      </Animated.View>
+
+      {/* Hidden TextInput that receives emoji keyboard input */}
+      {showEmojiInput && (
+        <RNTextInput
+          ref={hiddenInputRef}
+          value={emojiInputVal}
+          onChangeText={handleEmojiInputChange}
+          style={rp.hiddenInput}
+          autoCorrect={false}
+          autoCapitalize="none"
+          // On iOS this opens the emoji keyboard panel
+          keyboardType="default"
+          // returnKeyType dismiss
+          returnKeyType="done"
+          onSubmitEditing={() => {
+            setShowEmojiInput(false);
+            hiddenInputRef.current?.blur();
+          }}
+          onBlur={() => {
+            setShowEmojiInput(false);
+            setEmojiInputVal('');
+          }}
+        />
+      )}
+    </View>
+  );
+});
+
+const rp = StyleSheet.create({
   container: {
-    flex: 1,
-    backgroundColor: '#000',
-  },
-  topBar: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 20,
     flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingBottom: 10,
-    // subtle gradient-like shadow using background
-    backgroundColor: 'transparent',
-  },
-  backButton: {
-    zIndex: 21,
-  },
-  backButtonInner: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.25)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  titleArea: {
-    flex: 1,
-    marginLeft: 12,
-  },
-  titleText: {
-    color: '#fff',
-    fontSize: 15,
-    fontWeight: '700',
-    textShadowColor: 'rgba(0,0,0,0.8)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
-  },
-  counterText: {
-    color: 'rgba(255,255,255,0.75)',
-    fontSize: 12,
-    marginTop: 2,
-    textShadowColor: 'rgba(0,0,0,0.8)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
-  },
-  dotsRow: {
-    position: 'absolute',
-    bottom: 72,
-    left: 0,
-    right: 0,
-    zIndex: 20,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 6,
-  },
-  dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: 'rgba(255,255,255,0.4)',
-  },
-  dotActive: {
     backgroundColor: '#fff',
-    width: 18,
-    borderRadius: 3,
+    borderRadius: 32,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+    alignSelf: 'flex-start',
+    marginLeft: 11,
+    marginBottom: 6,
   },
-  page: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#000',
+  emojiBtn: { padding: 4 },
+  emoji: { fontSize: 24 },
+  keyboardBtn: {
+    borderLeftWidth: 1,
+    borderLeftColor: '#ECEFF1',
+    marginLeft: 2,
+    paddingLeft: 8,
   },
-  mediaFill: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT,
-  },
-  bottomBar: {
+  // Absolutely positioned off-screen so it's invisible but receives focus
+  hiddenInput: {
     position: 'absolute',
+    width: 1,
+    height: 1,
+    opacity: 0,
     bottom: 0,
     left: 0,
-    right: 0,
-    zIndex: 20,
-    alignItems: 'center',
-    paddingTop: 10,
-    backgroundColor: 'rgba(0,0,0,0.45)',
   },
-  closeButton: {
+});
+
+// ─── Reaction Viewers Modal ───────────────────────────────────────────────────
+// NEW: Shows who reacted with which emoji — mirrors the likes modal
+const ReactionViewersModal = memo(({ visible, onClose, reactions, allUsers }) => {
+  const [selectedEmoji, setSelectedEmoji] = useState(null);
+
+  // Build a flat list of { emoji, user } for display
+  const reactionEntries = useMemo(() => {
+    if (!reactions) return [];
+    return Object.entries(reactions)
+      .filter(([, users]) => users && users.length > 0)
+      .map(([emoji, uids]) => ({ emoji, uids }));
+  }, [reactions]);
+
+  // Set default selected emoji when modal opens
+  useEffect(() => {
+    if (visible && reactionEntries.length > 0) {
+      setSelectedEmoji(reactionEntries[0].emoji);
+    }
+  }, [visible, reactionEntries]);
+
+  const usersMap = useMemo(() => {
+    const m = new Map();
+    allUsers.forEach(u => m.set(u.uid, u));
+    return m;
+  }, [allUsers]);
+
+  const displayedUsers = useMemo(() => {
+    if (!selectedEmoji || !reactions?.[selectedEmoji]) return [];
+    return reactions[selectedEmoji]
+      .map(uid => usersMap.get(uid))
+      .filter(Boolean);
+  }, [selectedEmoji, reactions, usersMap]);
+
+  const totalCount = useMemo(() =>
+    reactionEntries.reduce((sum, e) => sum + e.uids.length, 0),
+    [reactionEntries]
+  );
+
+  if (!visible) return null;
+
+  return (
+    <Modal
+      visible={visible}
+      onRequestClose={onClose}
+      animationType="slide"
+      presentationStyle="pageSheet"
+    >
+      <View style={{ flex: 1, backgroundColor: '#fff' }}>
+        <Surface style={styles.commentModalHeader} elevation={1}>
+          <IconButton icon="arrow-left" size={22} onPress={onClose} />
+          <Text variant="titleMedium" style={styles.modalTitle}>
+            Reactions ({totalCount})
+          </Text>
+          <View style={{ width: 36 }} />
+        </Surface>
+
+        {/* Emoji tab bar */}
+        <View style={rvStyles.tabBar}>
+          {/* "All" tab */}
+          <TouchableOpacity
+            style={[rvStyles.tab, selectedEmoji === '__all__' && rvStyles.tabActive]}
+            onPress={() => setSelectedEmoji('__all__')}
+          >
+            <Text style={rvStyles.tabAll}>All</Text>
+            <Text style={[rvStyles.tabCount, selectedEmoji === '__all__' && rvStyles.tabCountActive]}>
+              {totalCount}
+            </Text>
+          </TouchableOpacity>
+          {reactionEntries.map(({ emoji, uids }) => (
+            <TouchableOpacity
+              key={emoji}
+              style={[rvStyles.tab, selectedEmoji === emoji && rvStyles.tabActive]}
+              onPress={() => setSelectedEmoji(emoji)}
+            >
+              <Text style={rvStyles.tabEmoji}>{emoji}</Text>
+              <Text style={[rvStyles.tabCount, selectedEmoji === emoji && rvStyles.tabCountActive]}>
+                {uids.length}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {/* User list */}
+        <FlatList
+          data={selectedEmoji === '__all__'
+            ? reactionEntries.flatMap(({ emoji, uids }) =>
+                uids.map(uid => ({ uid, emoji, user: usersMap.get(uid) })).filter(x => x.user)
+              )
+            : displayedUsers.map(u => ({ uid: u.uid, emoji: selectedEmoji, user: u }))
+          }
+          keyExtractor={(item, i) => `${item.uid}-${item.emoji}-${i}`}
+          renderItem={({ item }) => (
+            <View style={styles.likeUserItem}>
+              {item.user.profilePicture
+                ? <ExpoImage
+                    source={{ uri: item.user.profilePicture }}
+                    style={{ width: 42, height: 42, borderRadius: 21, marginRight: 11 }}
+                    cachePolicy="memory-disk"
+                  />
+                : <Avatar.Text
+                    size={42}
+                    label={`${item.user.firstName?.[0] || ''}${item.user.lastName?.[0] || ''}`}
+                    style={styles.likeAvatar}
+                  />}
+              <View style={styles.likeUserInfo}>
+                <Text style={styles.likeUserName}>{item.user.firstName} {item.user.lastName}</Text>
+                <Text style={styles.likeUserOccupation}>{item.user.occupation || 'Member'}</Text>
+              </View>
+              {/* Show the emoji they reacted with (useful in "All" tab) */}
+              <Text style={rvStyles.reactionBadge}>{item.emoji}</Text>
+            </View>
+          )}
+          contentContainerStyle={{ padding: 13 }}
+          ListEmptyComponent={
+            <View style={styles.emptyComments}>
+              <MaterialCommunityIcons name="emoticon-outline" size={54} color="#CFD8DC" />
+              <Text style={styles.emptyCommentsText}>No reactions yet</Text>
+            </View>
+          }
+        />
+      </View>
+    </Modal>
+  );
+});
+
+const rvStyles = StyleSheet.create({
+  tabBar: {
+    flexDirection: 'row',
+    paddingHorizontal: 13,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#ECEFF1',
+    gap: 4,
+    flexWrap: 'wrap',
+  },
+  tab: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    backgroundColor: 'rgba(255,255,255,0.15)',
+    gap: 4,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: '#F5F5F5',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
-    paddingHorizontal: 22,
-    paddingVertical: 10,
-    borderRadius: 24,
+    borderColor: '#ECEFF1',
   },
-  closeButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
+  tabActive: {
+    backgroundColor: '#E8EAF6',
+    borderColor: '#5C6BC0',
   },
+  tabEmoji: { fontSize: 18 },
+  tabAll: { fontSize: 13, fontWeight: '600', color: '#78909C' },
+  tabCount: { fontSize: 12, color: '#B0BEC5', fontWeight: '600' },
+  tabCountActive: { color: '#5C6BC0' },
+  reactionBadge: { fontSize: 22, marginLeft: 4 },
 });
 
 // ─── Main FeedScreen ──────────────────────────────────────────────────────────
 export default function FeedScreen({ navigation }) {
   const { user, userProfile } = useContext(AuthContext);
-const { activeOrgId: organizationId } = useActiveOrg();
+  const { activeOrgId: organizationId } = useActiveOrg();
   const { markFeedAsViewed } = useBadges();
   const insets = useSafeAreaInsets();
 
@@ -770,6 +1166,24 @@ const { activeOrgId: organizationId } = useActiveOrg();
   const [expandedPosts, setExpandedPosts] = useState({});
   const [filterMode, setFilterMode] = useState('all');
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [feedLoading, setFeedLoading] = useState(true);
+
+  // ── Reaction picker state ─────────────────────────────────────────────────
+  const [reactionPickerPostId, setReactionPickerPostId] = useState(null);
+
+  // ── NEW: Reaction viewers modal state ─────────────────────────────────────
+  const [reactionViewersPost, setReactionViewersPost] = useState(null);
+  const [showReactionViewers, setShowReactionViewers] = useState(false);
+
+  // ── Double-tap to like ────────────────────────────────────────────────────
+  const lastTapRef = useRef({});
+  const heartAnimsRef = useRef({});
+  const getHeartAnim = useCallback((postId) => {
+    if (!heartAnimsRef.current[postId]) {
+      heartAnimsRef.current[postId] = new Animated.Value(0);
+    }
+    return heartAnimsRef.current[postId];
+  }, []);
 
   // ── Per-user pin state ─────────────────────────────────────────────────────
   const [userPinnedPostIds, setUserPinnedPostIds] = useState(new Set());
@@ -798,7 +1212,6 @@ const { activeOrgId: organizationId } = useActiveOrg();
   const [uploadingMedia, setUploadingMedia] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
 
-  // ── Media viewer state (replaced old boolean + post ref) ──────────────────
   const [mediaViewerPost, setMediaViewerPost] = useState(null);
   const [mediaViewerIndex, setMediaViewerIndex] = useState(0);
   const [mediaViewerVisible, setMediaViewerVisible] = useState(false);
@@ -838,7 +1251,8 @@ const { activeOrgId: organizationId } = useActiveOrg();
     );
     postsUnsubRef.current = onSnapshot(postsQ, snap => {
       setAllPosts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, err => console.error('Posts listener error:', err));
+      setFeedLoading(false);
+    }, err => { console.error('Posts listener error:', err); setFeedLoading(false); });
 
     const sharedQ = query(
       collection(db, 'organizations', organizationId, 'sharedPosts'),
@@ -863,10 +1277,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
       const grouped = {};
       valid.forEach(story => {
         if (!grouped[story.userId]) {
-          grouped[story.userId] = {
-            userId: story.userId, userName: story.userName,
-            userAvatar: story.userAvatar, stories: []
-          };
+          grouped[story.userId] = { userId: story.userId, userName: story.userName, userAvatar: story.userAvatar, stories: [] };
         }
         grouped[story.userId].stories.push(story);
       });
@@ -882,11 +1293,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
       if (!err.message.includes('permission')) console.error('Stories error:', err);
     });
 
-    userPinsUnsubRef.current = subscribeToUserPins(
-      organizationId,
-      user.uid,
-      (pinSet) => setUserPinnedPostIds(pinSet)
-    );
+    userPinsUnsubRef.current = subscribeToUserPins(organizationId, user.uid, (pinSet) => setUserPinnedPostIds(pinSet));
 
     loadNotificationSettings();
     loadUsers();
@@ -915,38 +1322,58 @@ const { activeOrgId: organizationId } = useActiveOrg();
   }, [sharedPosts, filterMode]);
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
-  const deleteExpiredStories = async () => {
-    try {
-      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const snap = await getDocs(collection(db, 'organizations', organizationId, 'stories'));
-      const storage = getStorage();
-      for (const d of snap.docs) {
-        const data = d.data();
-        const t = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt);
-        if (t < cutoff) {
-          if (data.mediaUrl?.includes('firebase')) {
-            try {
-              const path = decodeURIComponent(data.mediaUrl.split('/o/')[1]?.split('?')[0]);
-              if (path) await deleteObject(ref(storage, path));
-            } catch (_) { }
-          }
-          await deleteDoc(doc(db, 'organizations', organizationId, 'stories', d.id));
+const deleteExpiredStories = async () => {
+  try {
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const snap = await getDocs(
+      collection(db, 'organizations', organizationId, 'stories')
+    );
+    const storage = getStorage();
+
+    for (const d of snap.docs) {
+      const data = d.data();
+      const t = data.createdAt?.toDate
+        ? data.createdAt.toDate()
+        : new Date(data.createdAt);
+
+      if (t < cutoff) {
+        // Try to delete storage file — silently skip if not allowed
+        if (data.mediaUrl?.includes('firebase')) {
+          try {
+            const path = decodeURIComponent(
+              data.mediaUrl.split('/o/')[1]?.split('?')[0]
+            );
+            if (path) await deleteObject(ref(storage, path));
+          } catch (_) {}
         }
+
+        // Try to delete Firestore doc — silently skip if not allowed
+        try {
+          await deleteDoc(
+            doc(db, 'organizations', organizationId, 'stories', d.id)
+          );
+        } catch (_) {}
       }
-    } catch (e) { console.error('Cleanup error:', e); }
-  };
+    }
+  } catch (e) {
+    // Silently ignore permission errors — cleanup is handled server-side
+    if (e?.code !== 'permission-denied' && !e?.message?.includes('permission')) {
+      console.warn('Story cleanup skipped:', e.message);
+    }
+  }
+};
 
-  const loadUsers = async () => {
-    try {
-      const snap = await getDocs(collection(db, 'organizations', organizationId, 'users'));
-      setAllUsers(snap.docs.map(d => ({ id: d.id, uid: d.data().uid || d.id, ...d.data() })));
-    } catch (e) { console.error('loadUsers:', e); }
-  };
+const loadUsers = async () => {
+  try {
+    const snap = await getDocs(collection(db, 'organizations', organizationId, 'users'));
+    setAllUsers(snap.docs.map(d => ({ id: d.id, uid: d.data().uid || d.id, ...d.data() })));
+  } catch (e) { console.error('loadUsers:', e); }
+};
 
-  const loadNotificationSettings = async () => {
-    try {
-      const snap = await getDocs(query(
-        collection(db, 'organizations', organizationId, 'users'),
+const loadNotificationSettings = async () => {
+  try {
+    const snap = await getDocs(query(
+      collection(db, 'organizations', organizationId, 'users'),
         where('uid', '==', user.uid)
       ));
       if (!snap.empty) setNotificationsEnabled(snap.docs[0].data().notificationsEnabled !== false);
@@ -964,13 +1391,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
       filtered = sharedPosts.map(shared => {
         const orig = allPosts.find(p => p.id === shared.postId);
         if (!orig) return null;
-        return {
-          ...orig,
-          sharedBy: shared.sharedByUserName,
-          sharedAt: shared.sharedAt,
-          sharedId: shared.id,
-          isShared: true,
-        };
+        return { ...orig, sharedBy: shared.sharedByUserName, sharedAt: shared.sharedAt, sharedId: shared.id, isShared: true };
       }).filter(Boolean);
     } else {
       filtered = sortWithPinned(filtered, userPinnedPostIds);
@@ -982,10 +1403,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
     try {
       const batch = writeBatch(db);
       const unviewed = sharedPosts.filter(s => !s.viewed);
-      unviewed.forEach(s => batch.update(
-        doc(db, 'organizations', organizationId, 'sharedPosts', s.id),
-        { viewed: true }
-      ));
+      unviewed.forEach(s => batch.update(doc(db, 'organizations', organizationId, 'sharedPosts', s.id), { viewed: true }));
       if (unviewed.length > 0) await batch.commit();
     } catch (e) { console.error('markSharedPostsAsViewed:', e); }
   };
@@ -1000,23 +1418,16 @@ const { activeOrgId: organizationId } = useActiveOrg();
   // ─── Pin action ────────────────────────────────────────────────────────────
   const handleTogglePin = useCallback(async (post) => {
     const isAdminPinningOwnPost = isAdmin && post.userId === user.uid;
-    const currentlyPinned = isAdminPinningOwnPost
-      ? !!post.isAdminPinned
-      : userPinnedPostIds.has(post.id);
-
+    const currentlyPinned = isAdminPinningOwnPost ? !!post.isAdminPinned : userPinnedPostIds.has(post.id);
     const newPin = !currentlyPinned;
 
     let title, message;
     if (isAdminPinningOwnPost) {
       title = newPin ? 'Pin for Everyone' : 'Unpin for Everyone';
-      message = newPin
-        ? 'This will pin your post at the top of every member\'s feed.'
-        : 'This will remove the global pin. Members will no longer see it pinned.';
+      message = newPin ? 'This will pin your post at the top of every member\'s feed.' : 'This will remove the global pin.';
     } else {
       title = newPin ? 'Pin to My Feed' : 'Unpin from My Feed';
-      message = newPin
-        ? 'This post will appear pinned at the top of your feed. Other members will not see it pinned.'
-        : 'This post will no longer be pinned on your feed.';
+      message = newPin ? 'This post will appear pinned at the top of your feed.' : 'This post will no longer be pinned on your feed.';
     }
 
     Alert.alert(title, message, [
@@ -1025,18 +1436,10 @@ const { activeOrgId: organizationId } = useActiveOrg();
         text: newPin ? 'Pin' : 'Unpin',
         onPress: async () => {
           try {
-            await togglePinPost({
-              postId: post.id,
-              postOwnerId: post.userId,
-              currentlyPinned,
-              organizationId,
-              actingUserId: user.uid,
-              actingUserIsAdmin: isAdmin,
-            });
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            await togglePinPost({ postId: post.id, postOwnerId: post.userId, currentlyPinned, organizationId, actingUserId: user.uid, actingUserIsAdmin: isAdmin });
             setMenuVisible({});
-          } catch (e) {
-            Alert.alert('Error', 'Failed to update pin.');
-          }
+          } catch (e) { Alert.alert('Error', 'Failed to update pin.'); }
         },
       },
     ]);
@@ -1048,10 +1451,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
 
   // ─── Post actions ──────────────────────────────────────────────────────────
   const handleDeletePost = useCallback(async (postId, postUserId, postMedia) => {
-    if (postUserId !== user.uid && !isAdmin) {
-      Alert.alert('Error', 'You can only delete your own posts');
-      return;
-    }
+    if (postUserId !== user.uid && !isAdmin) { Alert.alert('Error', 'You can only delete your own posts'); return; }
     Alert.alert('Delete Post', 'Are you sure?', [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -1076,8 +1476,10 @@ const { activeOrgId: organizationId } = useActiveOrg();
     ]);
   }, [user.uid, isAdmin, organizationId]);
 
+  // ── Like with haptics ─────────────────────────────────────────────────────
   const handleLike = useCallback(async (postId, likes) => {
     const liked = likes.includes(user.uid);
+    Haptics.impactAsync(liked ? Haptics.ImpactFeedbackStyle.Light : Haptics.ImpactFeedbackStyle.Medium);
     try {
       const postRef = doc(db, 'organizations', organizationId, 'posts', postId);
       await updateDoc(postRef, liked
@@ -1091,16 +1493,67 @@ const { activeOrgId: organizationId } = useActiveOrg();
     } catch (e) { console.error('handleLike:', e); }
   }, [user.uid, organizationId, notificationsEnabled, allPosts]);
 
+  // ── Double-tap to like ────────────────────────────────────────────────────
+  const handleDoubleTap = useCallback((postId, likes) => {
+    const now = Date.now();
+    const last = lastTapRef.current[postId] || 0;
+    if (now - last < 350) {
+      const liked = likes.includes(user.uid);
+      if (!liked) {
+        handleLike(postId, likes);
+        const anim = getHeartAnim(postId);
+        anim.setValue(0);
+        Animated.sequence([
+          Animated.spring(anim, { toValue: 1, useNativeDriver: true, tension: 150, friction: 6 }),
+          Animated.delay(600),
+          Animated.timing(anim, { toValue: 0, duration: 300, useNativeDriver: true }),
+        ]).start();
+      }
+    }
+    lastTapRef.current[postId] = now;
+  }, [handleLike, getHeartAnim, user.uid]);
+
+  // ── Emoji reaction ────────────────────────────────────────────────────────
+  const handleReaction = useCallback(async (postId, emoji) => {
+    setReactionPickerPostId(null);
+    try {
+      const postRef = doc(db, 'organizations', organizationId, 'posts', postId);
+      const post = allPosts.find(p => p.id === postId);
+      const currentReactions = post?.reactions || {};
+      const usersForEmoji = currentReactions[emoji] || [];
+      const hasReacted = usersForEmoji.includes(user.uid);
+
+      if (hasReacted) {
+        await updateDoc(postRef, { [`reactions.${emoji}`]: arrayRemove(user.uid) });
+      } else {
+        const updates = {};
+        Object.entries(currentReactions).forEach(([e, users]) => {
+          if (e !== emoji && users.includes(user.uid)) {
+            updates[`reactions.${e}`] = arrayRemove(user.uid);
+          }
+        });
+        updates[`reactions.${emoji}`] = arrayUnion(user.uid);
+        await updateDoc(postRef, updates);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    } catch (e) { console.error('handleReaction:', e); }
+  }, [user.uid, organizationId, allPosts]);
+
+  // ── NEW: open reaction viewers modal ─────────────────────────────────────
+  const handleShowReactionViewers = useCallback((post) => {
+    const reactions = post.reactions || {};
+    const hasAny = Object.values(reactions).some(users => users && users.length > 0);
+    if (!hasAny) return;
+    setReactionViewersPost(post);
+    setShowReactionViewers(true);
+  }, []);
+
   const handleComment = async () => {
     if (!commentText.trim() || !selectedPostForComment) return;
     try {
       const postRef = doc(db, 'organizations', organizationId, 'posts', selectedPostForComment.id);
       const postDoc = await getDoc(postRef);
-      if (!postDoc.exists()) {
-        Alert.alert('Error', 'Post no longer exists.');
-        setShowCommentModal(false);
-        return;
-      }
+      if (!postDoc.exists()) { Alert.alert('Error', 'Post no longer exists.'); setShowCommentModal(false); return; }
       const comment = {
         id: Date.now().toString(),
         userId: user.uid,
@@ -1122,10 +1575,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
   };
 
   const handleDeleteComment = async (postId, comment) => {
-    if (comment.userId !== user.uid && !isAdmin) {
-      Alert.alert('Error', 'You can only delete your own comments');
-      return;
-    }
+    if (comment.userId !== user.uid && !isAdmin) { Alert.alert('Error', 'You can only delete your own comments'); return; }
     Alert.alert('Delete Comment', 'Delete this comment?', [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -1136,10 +1586,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
             if (!postDoc.exists()) { Alert.alert('Error', 'Post not found'); return; }
             const current = postDoc.data().comments || [];
             const updated = current.filter(c => c.id !== comment.id && c.replyTo !== comment.id);
-            await updateDoc(postRef, {
-              comments: updated,
-              commentCount: increment(-(current.length - updated.length))
-            });
+            await updateDoc(postRef, { comments: updated, commentCount: increment(-(current.length - updated.length)) });
             if (showCommentsView && selectedPostForComment?.id === postId) {
               const fresh = await getDoc(postRef);
               if (fresh.exists()) setSelectedPostForComment({ id: fresh.id, ...fresh.data() });
@@ -1155,8 +1602,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
     if (!story?.views?.includes(user.uid)) {
       try {
         await updateDoc(doc(db, 'organizations', organizationId, 'stories', story.id), {
-          views: arrayUnion(user.uid),
-          viewCount: increment(1)
+          views: arrayUnion(user.uid), viewCount: increment(1)
         });
       } catch (e) { console.error('handleStoryView:', e); }
     }
@@ -1168,15 +1614,10 @@ const { activeOrgId: organizationId } = useActiveOrg();
     setStoryViewerVisible(true);
   }, []);
 
-  const closeStoryViewer = useCallback(() => {
-    setStoryViewerVisible(false);
-  }, []);
+  const closeStoryViewer = useCallback(() => { setStoryViewerVisible(false); }, []);
 
   const handleDeleteStory = useCallback(async (story, onUpdated) => {
-    if (story.userId !== user.uid && !isAdmin) {
-      Alert.alert('Error', 'You can only delete your own stories');
-      return;
-    }
+    if (story.userId !== user.uid && !isAdmin) { Alert.alert('Error', 'You can only delete your own stories'); return; }
     Alert.alert('Delete Story', 'Delete this story?', [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -1189,10 +1630,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
                 if (path) await deleteObject(ref(getStorage(), path));
               } catch (_) { }
             }
-            const updatedGroup = {
-              ...selectedStoryGroup,
-              stories: (selectedStoryGroup?.stories || []).filter(s => s.id !== story.id)
-            };
+            const updatedGroup = { ...selectedStoryGroup, stories: (selectedStoryGroup?.stories || []).filter(s => s.id !== story.id) };
             setSelectedStoryGroup(updatedGroup);
             onUpdated(updatedGroup.stories);
           } catch (e) { Alert.alert('Error', `Failed to delete: ${e.message}`); }
@@ -1226,8 +1664,9 @@ const { activeOrgId: organizationId } = useActiveOrg();
   const captureMedia = async (type) => {
     const result = await ImagePicker.launchCameraAsync({
       mediaTypes: type === 'image' ? ['images'] : ['videos'],
-      allowsEditing: true, aspect: [9, 16],
-      quality: type === 'image' ? 0.8 : 0.7, videoMaxDuration: 30,
+      allowsEditing: false,
+      quality: type === 'image' ? 0.8 : 0.7,
+      videoMaxDuration: 30,
     });
     if (!result.canceled && result.assets[0]) await uploadStory(result.assets[0].uri, type);
   };
@@ -1235,8 +1674,9 @@ const { activeOrgId: organizationId } = useActiveOrg();
   const pickMediaForStory = async (type) => {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: type === 'image' ? ['images'] : ['videos'],
-      allowsEditing: true, aspect: [9, 16],
-      quality: type === 'image' ? 0.8 : 0.7, videoMaxDuration: 30,
+      allowsEditing: false,
+      quality: type === 'image' ? 0.8 : 0.7,
+      videoMaxDuration: 30,
     });
     if (!result.canceled && result.assets[0]) await uploadStory(result.assets[0].uri, type);
   };
@@ -1267,6 +1707,8 @@ const { activeOrgId: organizationId } = useActiveOrg();
         mediaUrl: url, mediaType: type,
         createdAt: serverTimestamp(),
         views: [], viewCount: 0,
+        // ── NEW: initialize likes fields ──
+        likes: [], likeCount: 0,
       });
       setPendingStory(p => ({ ...p, uploadProgress: 100 }));
       setTimeout(() => setPendingStory(null), 500);
@@ -1302,9 +1744,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
         userId: user.uid, userName: `${userProfile.firstName} ${userProfile.lastName}`,
         createdAt: serverTimestamp(),
       });
-      await updateDoc(doc(db, 'organizations', organizationId, 'posts', selectedPostForShare.id), {
-        shares: increment(1)
-      });
+      await updateDoc(doc(db, 'organizations', organizationId, 'posts', selectedPostForShare.id), { shares: increment(1) });
       setShowShareModal(false);
       setSelectedPostForShare(null);
       Alert.alert('Success', `Post shared with ${otherUser.firstName}!`);
@@ -1318,9 +1758,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
         userId, fromUserId: user.uid,
         fromUserName: `${userProfile.firstName} ${userProfile.lastName}`,
         type, postId,
-        message: type === 'like'
-          ? `${userProfile.firstName} liked your post`
-          : `${userProfile.firstName} commented on your post`,
+        message: type === 'like' ? `${userProfile.firstName} liked your post` : `${userProfile.firstName} commented on your post`,
         read: false, createdAt: serverTimestamp(),
       });
     } catch (e) { console.error('sendNotification:', e); }
@@ -1328,14 +1766,9 @@ const { activeOrgId: organizationId } = useActiveOrg();
 
   const toggleNotifications = async () => {
     try {
-      const snap = await getDocs(query(
-        collection(db, 'organizations', organizationId, 'users'),
-        where('uid', '==', user.uid)
-      ));
+      const snap = await getDocs(query(collection(db, 'organizations', organizationId, 'users'), where('uid', '==', user.uid)));
       if (!snap.empty) {
-        await updateDoc(doc(db, 'organizations', organizationId, 'users', snap.docs[0].id), {
-          notificationsEnabled: !notificationsEnabled
-        });
+        await updateDoc(doc(db, 'organizations', organizationId, 'users', snap.docs[0].id), { notificationsEnabled: !notificationsEnabled });
         setNotificationsEnabled(v => !v);
       }
     } catch (e) { console.error('toggleNotifications:', e); }
@@ -1352,9 +1785,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
     return (date?.toDate ? date.toDate() : new Date(date)).toLocaleDateString();
   }, []);
 
-  const toggleExpand = useCallback((id) => {
-    setExpandedPosts(p => ({ ...p, [id]: !p[id] }));
-  }, []);
+  const toggleExpand = useCallback((id) => { setExpandedPosts(p => ({ ...p, [id]: !p[id] })); }, []);
 
   const viewUserProfile = useCallback((userId) => {
     const target = allUsers.find(u => u.uid === userId);
@@ -1366,16 +1797,13 @@ const { activeOrgId: organizationId } = useActiveOrg();
     setShowLikesModal(true);
   }, [allUsers]);
 
-  // ── Updated openMediaViewer to use new state ──────────────────────────────
   const openMediaViewer = useCallback((post, index) => {
     setMediaViewerPost(post);
     setMediaViewerIndex(index);
     setMediaViewerVisible(true);
   }, []);
 
-  const closeMediaViewer = useCallback(() => {
-    setMediaViewerVisible(false);
-  }, []);
+  const closeMediaViewer = useCallback(() => { setMediaViewerVisible(false); }, []);
 
   const insertMention = useCallback((userName) => {
     setCommentText(prev => {
@@ -1391,11 +1819,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
     const i = text.lastIndexOf('@');
     if (i !== -1) {
       const after = text.substring(i + 1);
-      if (!after.includes(' ')) {
-        setMentionSearch(after);
-        setShowUserMentions(true);
-        return;
-      }
+      if (!after.includes(' ')) { setMentionSearch(after); setShowUserMentions(true); return; }
     }
     setShowUserMentions(false);
   }, []);
@@ -1446,35 +1870,54 @@ const { activeOrgId: organizationId } = useActiveOrg();
     if (!media?.length) return null;
     const cols = media.length === 1 ? 1 : 2;
     const w = (SCREEN_WIDTH - 40) / cols - 5;
+    const heartAnim = getHeartAnim(post.id);
+
     return (
       <View style={styles.mediaGrid}>
-        {media.map((item, index) => (
-          <TouchableOpacity
-            key={index}
-            style={[styles.mediaItem, {
-              width: media.length === 3 && index === 0 ? SCREEN_WIDTH - 40 : w,
-              height: w,
-              marginRight: index % cols === 0 && media.length > 1 ? 5 : 0,
-              marginBottom: media.length > 2 ? 5 : 0,
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => handleDoubleTap(post.id, post.likes || [])}
+          style={{ position: 'relative' }}
+        >
+          <View style={styles.mediaGrid}>
+            {media.map((item, index) => (
+              <TouchableOpacity
+                key={index}
+                style={[styles.mediaItem, {
+                  width: media.length === 3 && index === 0 ? SCREEN_WIDTH - 40 : w,
+                  height: w,
+                  marginRight: index % cols === 0 && media.length > 1 ? 5 : 0,
+                  marginBottom: media.length > 2 ? 5 : 0,
+                }]}
+                onPress={() => openMediaViewer(post, index)}
+              >
+                <ExpoImage source={{ uri: item.url }} style={styles.mediaImage} contentFit="cover" cachePolicy="memory-disk" />
+                {item.type === 'video' && (
+                  <View style={styles.videoOverlay}>
+                    <MaterialCommunityIcons name="play-circle" size={36} color="white" />
+                  </View>
+                )}
+                {media.length > 4 && index === 3 && (
+                  <View style={styles.moreMediaOverlay}>
+                    <Text style={styles.moreMediaText}>+{media.length - 4}</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            ))}
+          </View>
+          <Animated.View
+            pointerEvents="none"
+            style={[styles.doubleTapHeart, {
+              opacity: heartAnim,
+              transform: [{ scale: heartAnim.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0.5, 1.3, 1] }) }],
             }]}
-            onPress={() => openMediaViewer(post, index)}
           >
-            <ExpoImage source={{ uri: item.url }} style={styles.mediaImage} contentFit="cover" cachePolicy="memory-disk" />
-            {item.type === 'video' && (
-              <View style={styles.videoOverlay}>
-                <MaterialCommunityIcons name="play-circle" size={36} color="white" />
-              </View>
-            )}
-            {media.length > 4 && index === 3 && (
-              <View style={styles.moreMediaOverlay}>
-                <Text style={styles.moreMediaText}>+{media.length - 4}</Text>
-              </View>
-            )}
-          </TouchableOpacity>
-        ))}
+            <Text style={{ fontSize: 72 }}>❤️</Text>
+          </Animated.View>
+        </TouchableOpacity>
       </View>
     );
-  }, [openMediaViewer]);
+  }, [openMediaViewer, handleDoubleTap, getHeartAnim]);
 
   const renderLinks = useCallback((links) => {
     if (!Array.isArray(links) || !links.length) return null;
@@ -1523,21 +1966,50 @@ const { activeOrgId: organizationId } = useActiveOrg();
     );
   }, []);
 
+  // ── NEW: Reaction summary row — now tappable to open viewers ─────────────
+  const renderReactionSummary = useCallback((post) => {
+    const reactions = post.reactions || {};
+    const entries = Object.entries(reactions).filter(([, users]) => users.length > 0);
+    if (entries.length === 0) return null;
+    return (
+      <View style={styles.reactionSummaryRow}>
+        {entries.map(([emoji, users]) => (
+          <TouchableOpacity
+            key={emoji}
+            style={[styles.reactionSummaryChip, users.includes(user.uid) && styles.reactionSummaryChipActive]}
+            onPress={() => handleShowReactionViewers(post)}
+            onLongPress={() => handleReaction(post.id, emoji)}
+          >
+            <Text style={styles.reactionSummaryEmoji}>{emoji}</Text>
+            <Text style={styles.reactionSummaryCount}>{users.length}</Text>
+          </TouchableOpacity>
+        ))}
+        {/* Total reaction count — also opens the viewers modal */}
+        {entries.reduce((s, [, u]) => s + u.length, 0) > 0 && (
+          <TouchableOpacity
+            style={styles.reactionTotalChip}
+            onPress={() => handleShowReactionViewers(post)}
+          >
+            <MaterialCommunityIcons name="account-multiple-outline" size={13} color="#78909C" />
+            <Text style={styles.reactionTotalText}>
+              {entries.reduce((s, [, u]) => s + u.length, 0)}
+            </Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    );
+  }, [user.uid, handleReaction, handleShowReactionViewers]);
+
   // ─── Render post ───────────────────────────────────────────────────────────
   const renderPost = useCallback(({ item }) => {
     const hasLiked = item.likes?.includes(user.uid);
     const isExpanded = expandedPosts[item.id];
     const isLong = (item.content?.length || 0) > 200;
     const display = isLong && !isExpanded ? item.content.substring(0, 200) + '...' : item.content;
-
     const pinned = isPostPinnedForUser(item);
+    const showReactionPicker = reactionPickerPostId === item.id;
 
-    const pinLabel = item.isAdminPinned
-      ? 'Pinned for Everyone'
-      : pinned
-        ? 'Pinned by You'
-        : null;
-
+    const pinLabel = item.isAdminPinned ? 'Pinned for Everyone' : pinned ? 'Pinned by You' : null;
     const menuPinTitle = item.isAdminPinned && isAdmin && item.userId === user.uid
       ? (item.isAdminPinned ? 'Unpin for Everyone' : 'Pin for Everyone')
       : (pinned ? 'Unpin from My Feed' : 'Pin to My Feed');
@@ -1545,31 +2017,17 @@ const { activeOrgId: organizationId } = useActiveOrg();
     return (
       <Card style={[styles.postCard, pinned && styles.pinnedPostCard]} elevation={1}>
         {pinned && pinLabel && (
-          <View style={[
-            styles.pinnedBanner,
-            item.isAdminPinned && styles.pinnedBannerAdmin,
-          ]}>
-            <MaterialCommunityIcons
-              name="pin"
-              size={13}
-              color={item.isAdminPinned ? '#FF6B35' : '#5C6BC0'}
-            />
-            <Text style={[
-              styles.pinnedText,
-              item.isAdminPinned && styles.pinnedTextAdmin,
-            ]}>
-              {pinLabel}
-            </Text>
+          <View style={[styles.pinnedBanner, item.isAdminPinned && styles.pinnedBannerAdmin]}>
+            <MaterialCommunityIcons name="pin" size={13} color={item.isAdminPinned ? '#FF6B35' : '#5C6BC0'} />
+            <Text style={[styles.pinnedText, item.isAdminPinned && styles.pinnedTextAdmin]}>{pinLabel}</Text>
           </View>
         )}
-
         {item.isShared && (
           <View style={styles.sharedBanner}>
             <MaterialCommunityIcons name="share" size={13} color="#78909C" />
             <Text style={styles.sharedText}>Shared by {item.sharedBy}</Text>
           </View>
         )}
-
         <View style={styles.postHeader}>
           <TouchableOpacity onPress={() => viewUserProfile(item.userId)}>
             {item.userAvatar
@@ -1588,28 +2046,13 @@ const { activeOrgId: organizationId } = useActiveOrg();
           <Menu
             visible={!!menuVisible[item.id]}
             onDismiss={() => setMenuVisible(v => ({ ...v, [item.id]: false }))}
-            anchor={
-              <IconButton icon="dots-vertical" size={18}
-                onPress={() => setMenuVisible(v => ({ ...v, [item.id]: true }))} />
-            }
+            anchor={<IconButton icon="dots-vertical" size={18} onPress={() => setMenuVisible(v => ({ ...v, [item.id]: true }))} />}
           >
-            <Menu.Item
-              onPress={() => { setMenuVisible({}); handleTogglePin(item); }}
-              title={menuPinTitle}
-              leadingIcon={pinned ? 'pin-off' : 'pin'}
-            />
+            <Menu.Item onPress={() => { setMenuVisible({}); handleTogglePin(item); }} title={menuPinTitle} leadingIcon={pinned ? 'pin-off' : 'pin'} />
             {(item.userId === user.uid || isAdmin) && (
-              <Menu.Item
-                onPress={() => { setMenuVisible({}); handleDeletePost(item.id, item.userId, item.media); }}
-                title="Delete Post"
-                leadingIcon="delete"
-              />
+              <Menu.Item onPress={() => { setMenuVisible({}); handleDeletePost(item.id, item.userId, item.media); }} title="Delete Post" leadingIcon="delete" />
             )}
-            <Menu.Item
-              onPress={() => { setMenuVisible({}); Alert.alert('Report', 'Coming soon'); }}
-              title="Report"
-              leadingIcon="flag"
-            />
+            <Menu.Item onPress={() => { setMenuVisible({}); Alert.alert('Report', 'Coming soon'); }} title="Report" leadingIcon="flag" />
           </Menu>
         </View>
 
@@ -1628,6 +2071,19 @@ const { activeOrgId: organizationId } = useActiveOrg();
           {renderLinks(item.links)}
         </Card.Content>
 
+        {/* ── Reaction summary — tap to see who reacted ── */}
+        {renderReactionSummary(item)}
+
+        {/* ── Reaction picker ── */}
+        {showReactionPicker && (
+          <ReactionPicker
+            visible={showReactionPicker}
+            onSelect={(emoji) => handleReaction(item.id, emoji)}
+            onClose={() => setReactionPickerPostId(null)}
+            postId={item.id}
+          />
+        )}
+
         <View style={styles.actionsContainer}>
           <View style={styles.statsRow}>
             {item.likeCount > 0 && (
@@ -1637,8 +2093,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
               </TouchableOpacity>
             )}
             {item.commentCount > 0 && (
-              <TouchableOpacity style={styles.statItem}
-                onPress={() => { setSelectedPostForComment(item); setShowCommentsView(true); }}>
+              <TouchableOpacity style={styles.statItem} onPress={() => { setSelectedPostForComment(item); setShowCommentsView(true); }}>
                 <MaterialCommunityIcons name="comment" size={13} color="#5C6BC0" />
                 <Text style={styles.statText}>{item.commentCount} comments</Text>
               </TouchableOpacity>
@@ -1649,13 +2104,22 @@ const { activeOrgId: organizationId } = useActiveOrg();
               <MaterialCommunityIcons name={hasLiked ? 'heart' : 'heart-outline'} size={20} color={hasLiked ? '#EC407A' : '#78909C'} />
               <Text style={[styles.actionText, hasLiked && styles.likedText]}>{hasLiked ? 'Liked' : 'Like'}</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.actionButton}
-              onPress={() => { setSelectedPostForComment(item); setReplyToComment(null); setShowCommentModal(true); }}>
+            <TouchableOpacity
+              style={styles.actionButton}
+              onPress={() => setReactionPickerPostId(showReactionPicker ? null : item.id)}
+              onLongPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                setReactionPickerPostId(item.id);
+              }}
+            >
+              <MaterialCommunityIcons name="emoticon-outline" size={20} color="#78909C" />
+              <Text style={styles.actionText}>React</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.actionButton} onPress={() => { setSelectedPostForComment(item); setReplyToComment(null); setShowCommentModal(true); }}>
               <MaterialCommunityIcons name="comment-outline" size={20} color="#78909C" />
               <Text style={styles.actionText}>Comment</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.actionButton}
-              onPress={() => { setSelectedPostForShare(item); setShowShareModal(true); }}>
+            <TouchableOpacity style={styles.actionButton} onPress={() => { setSelectedPostForShare(item); setShowShareModal(true); }}>
               <MaterialCommunityIcons name="share-outline" size={20} color="#78909C" />
               <Text style={styles.actionText}>Share</Text>
             </TouchableOpacity>
@@ -1667,7 +2131,8 @@ const { activeOrgId: organizationId } = useActiveOrg();
     user.uid, isAdmin, expandedPosts, menuVisible, getTimeAgo,
     handleLike, handleTogglePin, handleDeletePost, handleShowLikes,
     viewUserProfile, toggleExpand, renderMediaGrid, renderLinks,
-    isPostPinnedForUser, userPinnedPostIds,
+    isPostPinnedForUser, userPinnedPostIds, reactionPickerPostId,
+    renderReactionSummary, handleReaction,
   ]);
 
   // ─── Render comment ────────────────────────────────────────────────────────
@@ -1687,8 +2152,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
           <Text style={styles.commentTime}>{getTimeAgo(comment.createdAt)}</Text>
         </View>
         {canDelete && (
-          <IconButton icon="delete-outline" size={16} iconColor="#EC407A"
-            onPress={() => handleDeleteComment(postId, comment)} />
+          <IconButton icon="delete-outline" size={16} iconColor="#EC407A" onPress={() => handleDeleteComment(postId, comment)} />
         )}
       </View>
     );
@@ -1714,9 +2178,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
           horizontal
           showsHorizontalScrollIndicator={false}
           data={storyListData}
-          renderItem={({ item }) => (
-            <StoryThumbnail item={item} user={user} onPress={openStoryGroup} />
-          )}
+          renderItem={({ item }) => <StoryThumbnail item={item} user={user} onPress={openStoryGroup} />}
           keyExtractor={item => item.id || item.userId}
           removeClippedSubviews
         />
@@ -1748,14 +2210,11 @@ const { activeOrgId: organizationId } = useActiveOrg();
 
   // ─── Add media to new post ─────────────────────────────────────────────────
   const pickMedia = async () => {
-    if (mediaAttachments.length >= MAX_MEDIA_ITEMS) {
-      Alert.alert('Limit Reached', `Max ${MAX_MEDIA_ITEMS} items`); return;
-    }
+    if (mediaAttachments.length >= MAX_MEDIA_ITEMS) { Alert.alert('Limit Reached', `Max ${MAX_MEDIA_ITEMS} items`); return; }
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') { Alert.alert('Permission needed'); return; }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images', 'videos'], allowsMultipleSelection: true,
-      quality: 0.8, videoMaxDuration: 60,
+      mediaTypes: ['images', 'videos'], allowsMultipleSelection: true, quality: 0.8, videoMaxDuration: 60,
     });
     if (!result.canceled && result.assets) {
       const valid = [];
@@ -1779,9 +2238,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
   };
 
   const handleCreatePost = async () => {
-    if (!newPost.trim() && !mediaAttachments.length && !linkAttachments.length) {
-      Alert.alert('Error', 'Post cannot be empty'); return;
-    }
+    if (!newPost.trim() && !mediaAttachments.length && !linkAttachments.length) { Alert.alert('Error', 'Post cannot be empty'); return; }
     setPosting(true); setUploadingMedia(true); setUploadProgress(0);
     try {
       const uploaded = [];
@@ -1804,6 +2261,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
         links: linkAttachments.filter(l => l.trim()),
         likes: [], likeCount: 0,
         comments: [], commentCount: 0, shares: 0,
+        reactions: {},
         createdAt: serverTimestamp(),
       });
       setNewPost(''); setMediaAttachments([]); setLinkAttachments([]);
@@ -1826,16 +2284,24 @@ const { activeOrgId: organizationId } = useActiveOrg();
       </LinearGradient>
 
       <FlatList
-        data={posts}
+        data={feedLoading ? [] : posts}
         keyExtractor={item => item.isShared ? `shared-${item.sharedId}-${item.id}` : item.id}
         renderItem={renderPost}
         ListHeaderComponent={renderHeader}
-        ListEmptyComponent={() => (
-          <View style={styles.emptyContainer}>
-            <MaterialCommunityIcons name="post-outline" size={72} color="#CFD8DC" />
-            <Text variant="titleLarge" style={styles.emptyTitle}>No posts yet</Text>
-          </View>
-        )}
+        ListEmptyComponent={() =>
+          feedLoading ? (
+            <View>
+              <SkeletonPulse />
+              <SkeletonPulse />
+              <SkeletonPulse />
+            </View>
+          ) : (
+            <View style={styles.emptyContainer}>
+              <MaterialCommunityIcons name="post-outline" size={72} color="#CFD8DC" />
+              <Text variant="titleLarge" style={styles.emptyTitle}>No posts yet</Text>
+            </View>
+          )
+        }
         contentContainerStyle={styles.list}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         showsVerticalScrollIndicator={false}
@@ -1846,7 +2312,6 @@ const { activeOrgId: organizationId } = useActiveOrg();
         updateCellsBatchingPeriod={50}
       />
 
-      {/* ── Story Viewer ── */}
       <StoryViewer
         visible={storyViewerVisible}
         storyGroup={selectedStoryGroup}
@@ -1858,14 +2323,23 @@ const { activeOrgId: organizationId } = useActiveOrg();
         onStoryView={handleStoryView}
         onDeleteStory={handleDeleteStory}
         getTimeAgo={getTimeAgo}
+        organizationId={organizationId}
+        userProfile={userProfile}
       />
 
-      {/* ── Full-screen Media Viewer (new, with back button + centered image) ── */}
       <MediaViewerModal
         visible={mediaViewerVisible}
         post={mediaViewerPost}
         initialIndex={mediaViewerIndex}
         onClose={closeMediaViewer}
+      />
+
+      {/* ── NEW: Reaction Viewers Modal ── */}
+      <ReactionViewersModal
+        visible={showReactionViewers}
+        onClose={() => { setShowReactionViewers(false); setReactionViewersPost(null); }}
+        reactions={reactionViewersPost?.reactions}
+        allUsers={allUsers}
       />
 
       <Portal>
@@ -1877,8 +2351,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
         >
           <View style={styles.fullScreenContainer}>
             <Surface style={styles.commentModalHeader} elevation={1}>
-              <IconButton icon="close" size={22} disabled={posting}
-                onPress={() => { setShowNewPostModal(false); setNewPost(''); setMediaAttachments([]); setLinkAttachments([]); }} />
+              <IconButton icon="close" size={22} disabled={posting} onPress={() => { setShowNewPostModal(false); setNewPost(''); setMediaAttachments([]); setLinkAttachments([]); }} />
               <Text variant="titleMedium" style={styles.modalTitle}>Create Post</Text>
               <Button mode="contained" onPress={handleCreatePost} loading={posting}
                 disabled={posting || (!newPost.trim() && !mediaAttachments.length && !linkAttachments.length)}
@@ -2083,8 +2556,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
             <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 7, paddingTop: Platform.OS === 'ios' ? 54 : 16, paddingBottom: 11, backgroundColor: '#1a1a2e' }}>
               <IconButton icon="close" iconColor="#fff" size={22} onPress={() => { setShowVideoPlayerModal(false); setYoutubeVideoId(''); setYoutubePlayerReady(false); }} />
               <Text style={{ flex: 1, color: '#fff', fontSize: 15, fontWeight: '600' }}>{videoPlayerTitle}</Text>
-              <TouchableOpacity onPress={() => Linking.openURL(videoPlayerOriginalUrl).catch(() => { })}
-                style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' }}>
+              <TouchableOpacity onPress={() => Linking.openURL(videoPlayerOriginalUrl).catch(() => { })} style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' }}>
                 <MaterialCommunityIcons name="open-in-new" size={18} color="#fff" />
               </TouchableOpacity>
             </View>
@@ -2142,11 +2614,7 @@ const styles = StyleSheet.create({
   list: { paddingBottom: 76 },
   postCard: { marginHorizontal: 16, marginVertical: 6, backgroundColor: '#fff', borderRadius: 16, overflow: 'hidden' },
   pinnedPostCard: { borderLeftWidth: 3, borderLeftColor: '#5C6BC0' },
-  pinnedBanner: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    paddingHorizontal: 11, paddingVertical: 7,
-    backgroundColor: '#E8EAF6',
-  },
+  pinnedBanner: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 11, paddingVertical: 7, backgroundColor: '#E8EAF6' },
   pinnedText: { fontSize: 11, color: '#5C6BC0', fontWeight: '600' },
   pinnedBannerAdmin: { backgroundColor: '#FFF3E0' },
   pinnedTextAdmin: { color: '#FF6B35' },
@@ -2167,6 +2635,16 @@ const styles = StyleSheet.create({
   videoOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.3)' },
   moreMediaOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)' },
   moreMediaText: { color: '#fff', fontSize: 28, fontWeight: '700' },
+  doubleTapHeart: { position: 'absolute', top: '30%', left: '35%', zIndex: 99 },
+  // Reaction summary
+  reactionSummaryRow: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 11, paddingBottom: 7, gap: 6, alignItems: 'center' },
+  reactionSummaryChip: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#F5F5F5', borderRadius: 14, paddingHorizontal: 9, paddingVertical: 4, borderWidth: 1, borderColor: '#ECEFF1' },
+  reactionSummaryChipActive: { backgroundColor: '#E8EAF6', borderColor: '#5C6BC0' },
+  reactionSummaryEmoji: { fontSize: 15 },
+  reactionSummaryCount: { fontSize: 12, color: '#78909C', fontWeight: '600' },
+  // NEW: total reaction count chip
+  reactionTotalChip: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 7, paddingVertical: 4 },
+  reactionTotalText: { fontSize: 12, color: '#B0BEC5' },
   linksContainer: { marginTop: 11, gap: 7 },
   linkItem: { flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: '#E8EAF6', padding: 11, borderRadius: 8 },
   postLinkText: { flex: 1, color: '#5C6BC0', fontSize: 13, fontWeight: '500' },
@@ -2176,7 +2654,7 @@ const styles = StyleSheet.create({
   statText: { fontSize: 12, color: '#78909C' },
   actionButtons: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: '#ECEFF1' },
   actionButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 9, gap: 5 },
-  actionText: { color: '#78909C', fontWeight: '600', fontSize: 13 },
+  actionText: { color: '#78909C', fontWeight: '600', fontSize: 11 },
   likedText: { color: '#EC407A' },
   fullScreenModal: { flex: 1, margin: 0 },
   fullScreenContainer: { flex: 1, backgroundColor: '#fff' },

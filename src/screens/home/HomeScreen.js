@@ -270,11 +270,15 @@ export default function HomeScreen({ navigation }) {
           <View style={styles.headerTop}>
             {/* Shows org logo if uploaded, otherwise falls back to bundled asset */}
             <View style={styles.logoContainer}>
-              <Image 
-                source={orgLogoUrl ? { uri: orgLogoUrl } : require('../../../assets/rtd-logo.png')}
-                style={styles.headerLogo}
-                resizeMode="contain"
-              />
+              {orgLogoUrl ? (
+                <Image 
+                  source={{ uri: orgLogoUrl }}
+                  style={styles.headerLogo}
+                  resizeMode="contain"
+                />
+              ) : (
+                <MaterialCommunityIcons name="account-group" size={48} color="#fff" />
+              )}
             </View>
             <IconButton
               icon="logout"
@@ -308,8 +312,8 @@ export default function HomeScreen({ navigation }) {
                   <View style={styles.userDetails}>
                     <Text style={styles.occupation}>{userProfile.firstName} {userProfile.lastName}</Text>
                     {/* ADD THIS: */}
-                    {orgName && (
-                      <Text style={styles.orgNameText}>{orgName.replace(/\s*group\s*/i, '').trim()}</Text>
+                   {orgName && (
+                      <Text style={styles.orgNameText}>{orgName}</Text>
                     )}
                     {userProfile.location && (
                       <View style={styles.locationRow}>

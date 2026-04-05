@@ -12,9 +12,20 @@ export function BadgeProvider({ children }) {
   const privateChatsSnapshotRef = useRef(null);
   const groupChatsSnapshotRef = useRef(null);
 
+  // ── Session-viewed guard ──────────────────────────────────────────────────
+  // Once a tab is visited this session, we never let calculateBadges re-inflate
+  // its count. The set is cleared automatically when the user logs out (component
+  // unmounts / organizationId changes).
+  const viewedScreensRef = useRef(new Set());
+
   useEffect(() => {
     userProfileRef.current = userProfile;
   }, [userProfile]);
+
+  // Reset session-viewed set when org changes (e.g. after logout/login)
+  useEffect(() => {
+    viewedScreensRef.current = new Set();
+  }, [organizationId, user?.uid]);
 
   const [badges, setBadges] = useState({
     feed: 0,
@@ -177,14 +188,28 @@ export function BadgeProvider({ children }) {
       };
       const accountCreatedAt = toTimestamp(userData.createdAt);
 
-      // Message count is read synchronously from snapshot refs
+      // Messages always come from live snapshot refs — no guard needed here
+      // because the chat badge is driven purely by unreadCount on the chat docs,
+      // not by a lastViewedTimestamp. Opening a conversation marks it read via
+      // markMessagesAsRead / markGroupMessagesAsRead in chatService.js.
       const newMessagesCount = countUnreadMessagesFromRefs(user.uid);
       const messagePreviews = getUnreadMessagePreviewsFromRefs(user.uid);
 
-      const [newFeedCount, newEventsCount, newAnnouncementsCount] = await Promise.all([
-        countNewItems('posts', lastViewed.feed ? toTimestamp(lastViewed.feed) : accountCreatedAt),
-        countNewItems('events', lastViewed.events ? toTimestamp(lastViewed.events) : accountCreatedAt),
-        countNewItems('announcements', lastViewed.announcements ? toTimestamp(lastViewed.announcements) : accountCreatedAt),
+      // ── For non-chat tabs: respect the session-viewed guard ───────────────
+      // If the user has visited the tab this session we already wrote a fresh
+      // lastViewedTimestamp, so count is 0 by definition. Skip the network call.
+      const viewed = viewedScreensRef.current;
+
+      const [feedCount, eventsCount, announcementsCount] = await Promise.all([
+        viewed.has('feed')
+          ? Promise.resolve(0)
+          : countNewItems('posts', lastViewed.feed ? toTimestamp(lastViewed.feed) : accountCreatedAt),
+        viewed.has('events')
+          ? Promise.resolve(0)
+          : countNewItems('events', lastViewed.events ? toTimestamp(lastViewed.events) : accountCreatedAt),
+        viewed.has('announcements')
+          ? Promise.resolve(0)
+          : countNewItems('announcements', lastViewed.announcements ? toTimestamp(lastViewed.announcements) : accountCreatedAt),
       ]);
 
       const [recentPosts, recentEvents, recentAnnouncements] = await Promise.all([
@@ -195,9 +220,9 @@ export function BadgeProvider({ children }) {
 
       setBadges(prev => ({
         ...prev,
-        feed: newFeedCount,
-        events: newEventsCount,
-        announcements: newAnnouncementsCount,
+        feed: viewed.has('feed') ? 0 : feedCount,
+        events: viewed.has('events') ? 0 : eventsCount,
+        announcements: viewed.has('announcements') ? 0 : announcementsCount,
         messages: newMessagesCount,
         homeScreen: {
           posts: recentPosts,
@@ -252,8 +277,6 @@ export function BadgeProvider({ children }) {
   }, [user?.uid, organizationId, userProfile, calculateBadges]);
 
   // ─── Real-time listeners for messages ─────────────────────────────────────
-  // Stores full snapshot docs in refs so calculateBadges reads them
-  // synchronously — no stale data, no second network round-trip
 
   useEffect(() => {
     if (!user?.uid || !organizationId) return;
@@ -312,14 +335,75 @@ export function BadgeProvider({ children }) {
   const markScreenAsViewed = async (screenName) => {
     if (!userProfile?.uid || !organizationId) return;
     try {
+      // 1. Add to session guard so calculateBadges never re-inflates this tab
+      viewedScreensRef.current.add(screenName);
+
+      // 2. Zero out immediately in local state
+      setBadges(prev => ({ ...prev, [screenName]: 0 }));
+
+      // 3. Persist the new lastViewedTimestamp to Firestore
       const now = Timestamp.now();
       const userRef = doc(db, 'organizations', organizationId, 'users', userProfile.uid);
       await updateDoc(userRef, { ['lastViewedTimestamps.' + screenName]: now });
-      setBadges(prev => ({ ...prev, [screenName]: 0 }));
     } catch (error) {
       console.error('Error marking ' + screenName + ' as viewed:', error);
     }
   };
+
+  // ── Chat-specific: mark a single conversation as read ────────────────────
+  // Call this from PrivateChatScreen / GroupChatScreenNew when the user opens
+  // a conversation. It writes unreadCount to 0 on the chat doc (already done by
+  // chatService.markMessagesAsRead / markGroupMessagesAsRead), and then
+  // recalculates the total badge from the live snapshot refs so the tab badge
+  // drops by exactly that conversation's count without zeroing out others.
+  const markConversationAsRead = useCallback((chatId) => {
+    // Immediately update the snapshot ref in memory so the badge recalculates
+    // to the correct lower number before the Firestore write comes back.
+    if (privateChatsSnapshotRef.current) {
+      privateChatsSnapshotRef.current = privateChatsSnapshotRef.current.map(docSnap => {
+        if (docSnap.id !== chatId) return docSnap;
+        // Return a thin proxy that overrides unreadCount for this user
+        return {
+          ...docSnap,
+          data: () => ({
+            ...docSnap.data(),
+            unreadCount: {
+              ...docSnap.data().unreadCount,
+              [user.uid]: 0,
+            },
+          }),
+        };
+      });
+    }
+    if (groupChatsSnapshotRef.current) {
+      groupChatsSnapshotRef.current = groupChatsSnapshotRef.current.map(docSnap => {
+        if (docSnap.id !== chatId) return docSnap;
+        return {
+          ...docSnap,
+          data: () => ({
+            ...docSnap.data(),
+            unreadCount: {
+              ...docSnap.data().unreadCount,
+              [user.uid]: 0,
+            },
+          }),
+        };
+      });
+    }
+
+    // Recalculate badge count from updated refs
+    const newTotal = countUnreadMessagesFromRefs(user.uid);
+    const newPreviews = getUnreadMessagePreviewsFromRefs(user.uid);
+
+    setBadges(prev => ({
+      ...prev,
+      messages: newTotal,
+      homeScreen: {
+        ...prev.homeScreen,
+        messages: newPreviews,
+      },
+    }));
+  }, [user?.uid]);
 
   const dismissHomeScreenItem = async (type, itemId) => {
     if (!userProfile?.uid || !organizationId) return;
@@ -375,6 +459,7 @@ export function BadgeProvider({ children }) {
       markEventsAsViewed: () => markScreenAsViewed('events'),
       markAnnouncementsAsViewed: () => markScreenAsViewed('announcements'),
       markMessagesAsViewed: () => markScreenAsViewed('messages'),
+      markConversationAsRead,   // ← new: call this when opening a specific chat
       dismissHomeScreenItem,
       clearAllHomeScreenItems,
       dismissMessagePreview,

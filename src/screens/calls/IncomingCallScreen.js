@@ -14,6 +14,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Audio } from 'expo-av';
 import { AuthContext } from '../../context/AuthContext';
 import { acceptCall, declineCall, subscribeToCallStatus } from '../../services/callService';
+import { useActiveOrg } from '../../context/ActiveOrgContext';
 
 export default function IncomingCallScreen({ navigation, route }) {
   const {

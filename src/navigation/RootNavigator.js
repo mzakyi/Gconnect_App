@@ -129,8 +129,8 @@ export default function RootNavigator() {
             </>
           )}
 
-          {/* 🔐 SUPER ADMIN ONLY */}
-          {userProfile?.isSuperAdmin && (
+          {/* ✅ Any admin can access SuperAdmin screen */}
+          {userProfile?.isAdmin && (
             <>
               <Stack.Screen
                 name="SuperAdmin"

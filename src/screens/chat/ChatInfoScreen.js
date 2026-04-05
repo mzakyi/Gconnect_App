@@ -2,6 +2,7 @@ import React, { useState, useEffect, useContext, useCallback } from 'react';
 import { View, StyleSheet, ScrollView, Alert, TouchableOpacity, Image, ImageBackground } from 'react-native';
 import { Text, Avatar, Surface, List, Divider, Switch, Button, ActivityIndicator } from 'react-native-paper';
 import { AuthContext } from '../../context/AuthContext';
+import { useActiveOrg } from '../../context/ActiveOrgContext'; // ✅ FIXED: was missing
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { doc, getDoc, onSnapshot } from 'firebase/firestore';
@@ -40,7 +41,7 @@ const getMuteDescription = (mutedUntil) => {
 export default function ChatInfoScreen({ route, navigation }) {
   const { chatId, otherUserId, otherUserName } = route.params;
   const { user, userProfile } = useContext(AuthContext);
-const { activeOrgId: organizationId } = useActiveOrg();
+  const { activeOrgId: organizationId } = useActiveOrg(); // ✅ FIXED
 
   const [otherUserData, setOtherUserData] = useState(null);
   const [isMuted, setIsMuted] = useState(false);
@@ -50,11 +51,9 @@ const { activeOrgId: organizationId } = useActiveOrg();
   const [savingBackground, setSavingBackground] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // ── Live listener on the chat doc so mute & background stay in sync ──────
   useEffect(() => {
     if (!organizationId) return;
 
-    // Load other user data once
     const loadOtherUser = async () => {
       try {
         const userDoc = await getDoc(doc(db, 'organizations', organizationId, 'users', otherUserId));
@@ -62,7 +61,6 @@ const { activeOrgId: organizationId } = useActiveOrg();
       } catch (e) { console.error(e); }
     };
 
-    // Load block status once (stored on current user doc)
     const loadBlockStatus = async () => {
       try {
         const userDoc = await getDoc(doc(db, 'organizations', organizationId, 'users', user.uid));
@@ -74,19 +72,16 @@ const { activeOrgId: organizationId } = useActiveOrg();
     loadOtherUser();
     loadBlockStatus();
 
-    // Real-time listener on the chat document for mute & backgroundImage
     const chatRef = doc(db, 'organizations', organizationId, 'privateChats', chatId);
     const unsubscribe = onSnapshot(chatRef, (snap) => {
       if (!snap.exists()) return;
       const data = snap.data();
 
-      // Mute
       const mu = data.mutedFor?.[user.uid] ?? null;
       const isCurrentlyMuted = mu === 'forever' || (mu && new Date(mu).getTime() > Date.now());
       setIsMuted(isCurrentlyMuted);
       setMutedUntil(mu);
 
-      // Background
       setBackgroundImage(data.backgroundImage || null);
       setLoading(false);
     }, (err) => {
@@ -97,7 +92,6 @@ const { activeOrgId: organizationId } = useActiveOrg();
     return () => unsubscribe();
   }, [organizationId, chatId, user.uid, otherUserId]);
 
-  // ── Mute toggle ──────────────────────────────────────────────────────────
   const handleMuteToggle = () => {
     if (isMuted) {
       Alert.alert('Unmute', 'Turn notifications back on for this chat?', [
@@ -107,7 +101,6 @@ const { activeOrgId: organizationId } = useActiveOrg();
           onPress: async () => {
             try {
               await unmuteChat(chatId, user.uid, organizationId);
-              // State will auto-update via the onSnapshot listener
             } catch {
               Alert.alert('Error', 'Failed to unmute');
             }
@@ -125,7 +118,6 @@ const { activeOrgId: organizationId } = useActiveOrg();
             onPress: async () => {
               try {
                 await muteChat(chatId, user.uid, opt.value, organizationId);
-                // State will auto-update via the onSnapshot listener
               } catch {
                 Alert.alert('Error', 'Failed to mute');
               }
@@ -136,7 +128,6 @@ const { activeOrgId: organizationId } = useActiveOrg();
     }
   };
 
-  // ── Block toggle ─────────────────────────────────────────────────────────
   const handleBlockToggle = async () => {
     try {
       if (isBlocked) {
@@ -162,7 +153,6 @@ const { activeOrgId: organizationId } = useActiveOrg();
     }
   };
 
-  // ── Background image ─────────────────────────────────────────────────────
   const handlePickBackground = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
@@ -199,7 +189,6 @@ const { activeOrgId: organizationId } = useActiveOrg();
     ]);
   };
 
-  // ── Delete chat ───────────────────────────────────────────────────────────
   const handleDeleteChat = () => {
     Alert.alert('Delete Chat', 'Choose how to delete this chat.', [
       { text: 'Cancel', style: 'cancel' },
@@ -254,7 +243,6 @@ const { activeOrgId: organizationId } = useActiveOrg();
       </LinearGradient>
 
       <ScrollView>
-        {/* Profile section */}
         <View style={styles.profileSection}>
           {otherUserData?.profilePicture ? (
             <Avatar.Image size={100} source={{ uri: otherUserData.profilePicture }} style={styles.avatar} />
@@ -273,7 +261,6 @@ const { activeOrgId: organizationId } = useActiveOrg();
 
         <Divider />
 
-        {/* About */}
         <List.Section>
           <List.Subheader>About</List.Subheader>
           {otherUserData?.bio && (
@@ -289,7 +276,6 @@ const { activeOrgId: organizationId } = useActiveOrg();
 
         <Divider />
 
-        {/* Chat background */}
         <List.Section>
           <List.Subheader>Chat Background</List.Subheader>
 
@@ -338,7 +324,6 @@ const { activeOrgId: organizationId } = useActiveOrg();
 
         <Divider />
 
-        {/* Actions */}
         <List.Section>
           <List.Subheader>Settings</List.Subheader>
 
@@ -366,7 +351,6 @@ const { activeOrgId: organizationId } = useActiveOrg();
 
         <Divider />
 
-        {/* Danger zone */}
         <View style={styles.dangerZone}>
           <Button
             mode="outlined"
@@ -398,7 +382,6 @@ const styles = StyleSheet.create({
   userOccupation: { fontSize: 16, color: '#64748B', marginBottom: 10 },
   onlineBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 },
   onlineText: { fontSize: 14, color: '#4CAF50', fontWeight: '500' },
-  // Background
   bgPreviewContainer: { marginHorizontal: 16, borderRadius: 12, overflow: 'hidden', height: 140, marginBottom: 12 },
   bgPreview: { width: '100%', height: '100%' },
   bgPreviewOverlay: {

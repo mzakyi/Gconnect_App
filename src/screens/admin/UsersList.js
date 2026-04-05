@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { useActiveOrg } from '../../context/ActiveOrgContext';
 import { View, StyleSheet, FlatList, TouchableOpacity, Alert, RefreshControl } from 'react-native';
-import { Text, Card, Avatar, Searchbar, Chip, Menu } from 'react-native-paper';
+import { Text, Card, Avatar, Searchbar, Chip, Menu, Divider } from 'react-native-paper';
 import { collection, query, where, onSnapshot, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../../../firebase.config';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -95,6 +95,53 @@ export default function UsersList({ navigation }) {
     );
   };
 
+  const handleMakeAdmin = (userId, userName) => {
+    Alert.alert(
+      'Make Admin',
+      `Make ${userName} an admin? They will be able to approve members, create events, and manage the group.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Make Admin',
+          onPress: async () => {
+            try {
+              const userRef = doc(db, 'organizations', organizationId, 'users', userId);
+              await updateDoc(userRef, { isAdmin: true });
+              Alert.alert('Done', `${userName} is now an admin`);
+            } catch (error) {
+              Alert.alert('Error', 'Failed to update user');
+              console.error(error);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleRemoveAdmin = (userId, userName) => {
+    Alert.alert(
+      'Remove Admin',
+      `Remove admin privileges from ${userName}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const userRef = doc(db, 'organizations', organizationId, 'users', userId);
+              await updateDoc(userRef, { isAdmin: false });
+              Alert.alert('Done', `${userName} is no longer an admin`);
+            } catch (error) {
+              Alert.alert('Error', 'Failed to update user');
+              console.error(error);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const toggleMenu = (userId) => {
     setMenuVisible(prev => ({ ...prev, [userId]: !prev[userId] }));
   };
@@ -104,7 +151,7 @@ export default function UsersList({ navigation }) {
     setTimeout(() => setRefreshing(false), 500);
   };
 
-  const renderUser = ({ item }) => (
+const renderUser = ({ item }) => (
     <Card style={styles.userCard}>
       <TouchableOpacity onPress={() => navigation.navigate('UserProfile', { userId: item.id })}>
         <Card.Content>
@@ -161,17 +208,49 @@ export default function UsersList({ navigation }) {
                 title="View Profile"
                 leadingIcon="account"
               />
-              {/* Only show Ban option to admins */}
+
+              {/* Make Admin / Remove Admin — only visible to admins */}
               {isCurrentUserAdmin && (
-                <Menu.Item 
-                  onPress={() => {
-                    toggleMenu(item.id);
-                    handleBanUser(item.id, `${item.firstName} ${item.lastName}`);
-                  }} 
-                  title="Ban User"
-                  leadingIcon="cancel"
-                  titleStyle={{ color: '#f44336' }}
-                />
+                <>
+                  <Divider />
+                  {!item.isAdmin ? (
+                    <Menu.Item 
+                      onPress={() => {
+                        toggleMenu(item.id);
+                        handleMakeAdmin(item.id, `${item.firstName} ${item.lastName}`);
+                      }} 
+                      title="Make Admin"
+                      leadingIcon="shield-crown"
+                      titleStyle={{ color: '#6366F1' }}
+                    />
+                  ) : (
+                    <Menu.Item 
+                      onPress={() => {
+                        toggleMenu(item.id);
+                        handleRemoveAdmin(item.id, `${item.firstName} ${item.lastName}`);
+                      }} 
+                      title="Remove Admin"
+                      leadingIcon="shield-off"
+                      titleStyle={{ color: '#FF9800' }}
+                    />
+                  )}
+                </>
+              )}
+
+              {/* Ban — only visible to admins */}
+              {isCurrentUserAdmin && (
+                <>
+                  <Divider />
+                  <Menu.Item 
+                    onPress={() => {
+                      toggleMenu(item.id);
+                      handleBanUser(item.id, `${item.firstName} ${item.lastName}`);
+                    }} 
+                    title="Ban User"
+                    leadingIcon="cancel"
+                    titleStyle={{ color: '#f44336' }}
+                  />
+                </>
               )}
             </Menu>
           </View>

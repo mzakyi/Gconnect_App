@@ -24,12 +24,12 @@ export default function OrgSwitcher({ onSwitch, style }) {
   const [currentOrgName, setCurrentOrgName] = useState('');
 
   const isSuperAdmin = userProfile?.isSuperAdmin === true;
+  const isAdmin = userProfile?.isAdmin === true;
 
   useEffect(() => {
-    if (!isSuperAdmin || !user?.uid || !organizationId) return;
+    if ((!isSuperAdmin && !isAdmin) || !user?.uid || !organizationId) return;
     loadOrgs();
-  }, [isSuperAdmin, user?.uid, organizationId]);
-
+  }, [isSuperAdmin, isAdmin, user?.uid, organizationId]);
 // Replace the entire loadOrgs function and the activeOrg line:
 
   const loadOrgs = async () => {
@@ -41,16 +41,17 @@ export default function OrgSwitcher({ onSwitch, style }) {
       setCurrentOrgName(currentName);
 
       const superOrgs = await getAllAdminOrgsForUser(user.uid);
-      
-      // Always put home org first, then others — filter duplicates
+      console.log('🏢 superOrgs found:', JSON.stringify(superOrgs)); // ← ADD THIS
+
       const currentOrgEntry = { id: organizationId, name: currentName };
       const others = superOrgs.filter((o) => o.id !== organizationId);
-      setAllOrgs([currentOrgEntry, ...others]);
+      const combined = [currentOrgEntry, ...others];
+      console.log('🏢 allOrgs combined:', JSON.stringify(combined)); // ← ADD THIS
+      setAllOrgs(combined);
     } catch (error) {
       console.error('OrgSwitcher loadOrgs error:', error);
     }
   };
-
   // Change this line — use activeOrgId from context, not local state:
   const activeOrg = allOrgs.find((o) => o.id === activeOrgId) || allOrgs[0];
 
@@ -59,7 +60,8 @@ export default function OrgSwitcher({ onSwitch, style }) {
     switchOrg(org.id, org.name);          // ← updates ActiveOrgContext globally
     if (onSwitch) onSwitch(org.id, org.name); // ← still calls prop if provided
   };
-
+  
+  if (allOrgs.length <= 1) return null;
   return (
     <>
       <TouchableOpacity
