@@ -30,6 +30,7 @@ import {
   setGroupChatBackgroundImage,
   removeGroupChatBackgroundImage,
   renameGroupChat,
+  setGroupChatImage,
 } from '../../services/chatService';
 
 const { width } = Dimensions.get('window');
@@ -74,6 +75,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
   const [selectedUsers, setSelectedUsers]       = useState([]);
   const [loading, setLoading]                   = useState(false);
   const [savingBackground, setSavingBackground] = useState(false);
+  const [savingGroupImage, setSavingGroupImage] = useState(false);
 
   // ── Live-synced fields (from onSnapshot) ────────────────────────────────
   const [backgroundImage, setBackgroundImage] = useState(null);
@@ -245,6 +247,27 @@ const { activeOrgId: organizationId } = useActiveOrg();
     }
   };
 
+
+  const handlePickGroupImage = async () => {
+    if (!canManage) return;
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+    if (result.canceled) return;
+
+    setSavingGroupImage(true);
+    try {
+      await setGroupChatImage(groupId, result.assets[0].uri, organizationId);
+      Alert.alert('Done', 'Group photo updated!');
+    } catch {
+      Alert.alert('Error', 'Failed to update group photo');
+    } finally {
+      setSavingGroupImage(false);
+    }
+  };
   // ── Background image ──────────────────────────────────────────────────────
   // Any group member can set/change the background (it's shared for all).
   // If you want to restrict this to admins only, wrap the buttons in {canManage && ...}
@@ -597,11 +620,32 @@ const { activeOrgId: organizationId } = useActiveOrg();
 
         {/* ── Profile section ── */}
         <View style={styles.profileSection}>
-          {groupData?.image ? (
-            <Avatar.Image size={100} source={{ uri: groupData.image }} style={styles.avatar} />
-          ) : (
-            <Avatar.Icon size={100} icon="account-group" style={styles.avatar} />
-          )}
+<TouchableOpacity
+            onPress={() => {
+              if (groupData?.image) {
+                navigation.navigate('ImageViewer', { uri: groupData.image });
+              } else if (canManage) {
+                handlePickGroupImage();
+              }
+            }}
+            onLongPress={() => canManage && handlePickGroupImage()}
+            style={styles.avatarTouchable}
+          >
+            {savingGroupImage ? (
+              <View style={styles.avatarLoadingContainer}>
+                <ActivityIndicator size="large" color="#fff" />
+              </View>
+            ) : groupData?.image ? (
+              <Avatar.Image size={100} source={{ uri: groupData.image }} style={styles.avatar} />
+            ) : (
+              <Avatar.Icon size={100} icon="account-group" style={styles.avatar} />
+            )}
+            {canManage && (
+              <View style={styles.avatarEditBadge}>
+                <MaterialCommunityIcons name="camera" size={14} color="#fff" />
+              </View>
+            )}
+          </TouchableOpacity>
 
           <View style={styles.groupNameRow}>
             <Text style={styles.groupName}>{groupName}</Text>
@@ -946,7 +990,18 @@ const styles = StyleSheet.create({
 
   // Profile
   profileSection: { alignItems: 'center', paddingVertical: 30, backgroundColor: '#fff' },
-  avatar:         { backgroundColor: '#128C7E', marginBottom: 15 },
+  avatar:         { backgroundColor: '#128C7E', marginBottom: 0 },
+  avatarTouchable: { marginBottom: 15, position: 'relative' },
+  avatarLoadingContainer: {
+    width: 100, height: 100, borderRadius: 50,
+    backgroundColor: '#128C7E', alignItems: 'center', justifyContent: 'center',
+  },
+  avatarEditBadge: {
+    position: 'absolute', bottom: 0, right: 0,
+    backgroundColor: '#128C7E', borderRadius: 12,
+    width: 24, height: 24, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 2, borderColor: '#fff',
+  },
   groupNameRow:   { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
   groupName:      {
     fontSize: 24, fontWeight: '700', color: '#1E293B',

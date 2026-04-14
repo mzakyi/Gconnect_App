@@ -25,19 +25,33 @@ export default function PendingSuperAdminRequests({ navigation }) {
     return () => unsub();
   }, [organizationId]);
 
-  const handleApprove = (request) => {
+const handleApprove = (request) => {
     Alert.alert(
-      'Approve Super Admin',
-      `Grant ${request.firstName} ${request.lastName} full admin access to your organization?`,
+      'Approve Request',
+      `${request.firstName} ${request.lastName} wants to join your organization. What role should they have?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Approve',
+          text: 'Regular Member',
           onPress: async () => {
             setProcessingId(request.id);
             try {
-              await approveSuperAdminRequest(request.id, organizationId);
-              Alert.alert('Approved ✅', `${request.firstName} ${request.lastName} now has Super Admin access.`);
+              await approveSuperAdminRequest(request.id, organizationId, false);
+              Alert.alert('Approved ✅', `${request.firstName} ${request.lastName} has been added as a regular member.`);
+            } catch (error) {
+              Alert.alert('Error', error.message);
+            } finally {
+              setProcessingId(null);
+            }
+          },
+        },
+        {
+          text: 'Make Admin',
+          onPress: async () => {
+            setProcessingId(request.id);
+            try {
+              await approveSuperAdminRequest(request.id, organizationId, true);
+              Alert.alert('Approved ✅', `${request.firstName} ${request.lastName} has been added as an admin.`);
             } catch (error) {
               Alert.alert('Error', error.message);
             } finally {
@@ -52,7 +66,7 @@ export default function PendingSuperAdminRequests({ navigation }) {
   const handleReject = (request) => {
     Alert.alert(
       'Reject Request',
-      `Reject ${request.firstName} ${request.lastName}'s request for Super Admin access?`,
+      `Reject ${request.firstName} ${request.lastName}'s request for Super User access?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -97,18 +111,19 @@ export default function PendingSuperAdminRequests({ navigation }) {
             </View>
           </View>
 
-          <View style={styles.fromOrgRow}>
+            <View style={styles.fromOrgRow}>
             <MaterialCommunityIcons name="office-building-outline" size={15} color="#64748B" />
             <Text style={styles.fromOrgText}>
-              Admin from:{' '}
+              From:{' '}
               <Text style={styles.fromOrgName}>{item.fromOrgName || 'Another Organization'}</Text>
+              {item.requesterIsAdmin ? '  👑 Admin in their org' : ''}
             </Text>
           </View>
 
           <View style={styles.requestInfo}>
             <MaterialCommunityIcons name="information-outline" size={15} color="#667EEA" style={{ marginTop: 1 }} />
             <Text style={styles.requestInfoText}>
-              Requesting full admin access — can create announcements, events, and posts.
+              Requesting to join your organization. You can add them as a regular member or grant admin access.
             </Text>
           </View>
 
@@ -153,7 +168,7 @@ export default function PendingSuperAdminRequests({ navigation }) {
             <MaterialCommunityIcons name="arrow-left" size={22} color="#fff" />
           </TouchableOpacity>
           <View style={styles.headerText}>
-            <Text style={styles.headerTitle}>Super Admin Requests</Text>
+            <Text style={styles.headerTitle}>Super User Requests</Text>
             <Text style={styles.headerSubtitle}>Review and manage access requests</Text>
           </View>
           <View style={styles.countBadge}>
@@ -174,7 +189,7 @@ export default function PendingSuperAdminRequests({ navigation }) {
           <MaterialCommunityIcons name="crown-outline" size={72} color="#CBD5E1" />
           <Text style={styles.emptyTitle}>No Pending Requests</Text>
           <Text style={styles.emptyText}>
-            No admins have requested super admin access to your organization yet.
+            No one has requested to join your organization yet.
           </Text>
         </View>
       ) : (

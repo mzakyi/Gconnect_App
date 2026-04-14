@@ -11,9 +11,17 @@ import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
 import { navigationRef, navigate } from './src/navigation/navigationRef';
 import { ActiveOrgProvider } from './src/context/ActiveOrgContext';
-
-// ✅ ADD THIS (EmailJS init)
 import { initEmailService } from './src/services/emailService';
+import { LogBox } from 'react-native';
+
+LogBox.ignoreLogs(['Missing or insufficient permissions']);
+
+// Suppress permission errors in console after logout
+const originalConsoleError = console.error;
+console.error = (...args) => {
+  if (args[0]?.includes?.('Missing or insufficient permissions')) return;
+  originalConsoleError(...args);
+};
 
 try {
   const { registerGlobals } = require('@livekit/react-native');
@@ -46,7 +54,6 @@ function handleNotificationData(data) {
         organizationId: data.orgId         || '',
       });
       break;
-
     case 'messages':
       if (data.chatId) {
         navigate('PrivateChat', { chatId: data.chatId, organizationId: data.orgId });
@@ -56,19 +63,15 @@ function handleNotificationData(data) {
         navigate('Chat');
       }
       break;
-
     case 'posts':
       navigate('Feed');
       break;
-
     case 'events':
       navigate('Events');
       break;
-
     case 'announcements':
       navigate('Announcements');
       break;
-
     default:
       break;
   }
@@ -105,16 +108,12 @@ function AppWithNavigation() {
 export default function App() {
   useEffect(() => {
     const setup = async () => {
-      // ✅ INIT EMAILJS (THIS WAS MISSING)
       initEmailService();
-
-      // ✅ Notifications permission
       const { status } = await Notifications.requestPermissionsAsync();
       if (status !== 'granted') {
         console.log('Notification permissions not granted');
       }
     };
-
     setup();
   }, []);
 
@@ -122,7 +121,7 @@ export default function App() {
     <PaperProvider>
       <OrganizationProvider>
         <AuthProvider>
-          <ActiveOrgProvider> 
+          <ActiveOrgProvider>
             <NotificationProvider>
               <BadgeProvider>
                 <CallProvider>
@@ -130,7 +129,7 @@ export default function App() {
                 </CallProvider>
               </BadgeProvider>
             </NotificationProvider>
-          </ActiveOrgProvider> 
+          </ActiveOrgProvider>
         </AuthProvider>
       </OrganizationProvider>
     </PaperProvider>

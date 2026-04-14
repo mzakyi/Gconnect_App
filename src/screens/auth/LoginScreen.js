@@ -71,11 +71,11 @@ export default function LoginScreen({ navigation }) {
         >
           <View style={styles.logoContainer}>
             <View style={styles.logoWrapper}>
-              <Image
-                source={require('../../../assets/sankatos.png')}
-                style={styles.logo}
-                resizeMode="contain"
-              />
+            <Image
+              source={require('../../../assets/AppIcon.png')}
+              style={styles.logo}
+              resizeMode="contain"
+            />
             </View>
           </View>
 
@@ -185,7 +185,7 @@ export default function LoginScreen({ navigation }) {
       </LinearGradient>
     </KeyboardAvoidingView>
   );
-}
+};
 
 const styles = StyleSheet.create({
   container: {
@@ -204,25 +204,24 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     marginTop: 20,
   },
-  logoWrapper: {
-    borderRadius: 60,
-    shadowColor: '#3f51b5',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.3,
-    shadowRadius: 5,
-    elevation: 8,
-    width: 100,
-    height: 90,
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-    borderWidth: 0,
-    borderColor: '#5c6bc0',
-  },
-  logo: {
-    width: 155,
-    height: 200,
-  },
+logoWrapper: {
+  width: 110,
+  height: 110,
+  borderRadius: 55,
+  alignItems: 'center',
+  justifyContent: 'center',
+  overflow: 'hidden',
+  backgroundColor: '#fff', // optional but makes logo pop
+  shadowColor: '#3f51b5',
+  shadowOffset: { width: 0, height: 6 },
+  shadowOpacity: 0.3,
+  shadowRadius: 5,
+  elevation: 8,
+},
+logo: {
+  width: '140%',
+  height: '150%',
+},
   formContainer: {
     paddingHorizontal: 30,
   },

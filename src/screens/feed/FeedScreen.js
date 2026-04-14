@@ -25,6 +25,7 @@ import {
   serverTimestamp, query, orderBy, where, increment, onSnapshot,
   deleteDoc, getDoc, writeBatch, setDoc
 } from 'firebase/firestore';
+import { sendStoryReplyMessage, createPrivateChat } from '../../services/chatService';
 import { db } from '../../../firebase.config';
 import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 
@@ -176,7 +177,7 @@ const StoryThumbnail = memo(({ item, user, onPress }) => {
 const StoryViewer = memo(({
   visible, storyGroup, initialIndex, userId, isAdmin, allUsers,
   onClose, onStoryView, onDeleteStory, getTimeAgo,
-  organizationId, userProfile,
+  organizationId, userProfile, navigation,
 }) => {
   const insets = useSafeAreaInsets();
   const [currentIndex, setCurrentIndex] = useState(initialIndex || 0);
@@ -189,6 +190,9 @@ const StoryViewer = memo(({
   const [storyLikesModalVisible, setStoryLikesModalVisible] = useState(false);
   const [storyLikers, setStoryLikers] = useState([]);
   const [likingStory, setLikingStory] = useState(false);
+  const [showReplyInput, setShowReplyInput] = useState(false);
+  const [replyText, setReplyText] = useState('');
+  const [sendingReply, setSendingReply] = useState(false);
 
   const storyProgressAnim = useRef(new Animated.Value(0)).current;
   const storyProgressRef = useRef(0);
@@ -207,11 +211,23 @@ const StoryViewer = memo(({
   const isOwnStory = currentStory?.userId === userId;
 
   // ── Derived: has current user liked this story? ───────────────────────────
+  const [liveStory, setLiveStory] = useState(null);
+
+useEffect(() => {
+  if (!currentStory?.id || !organizationId) return;
+  const storyRef = doc(db, 'organizations', organizationId, 'stories', currentStory.id);
+  const unsub = onSnapshot(storyRef, (snap) => {
+    if (snap.exists()) setLiveStory({ id: snap.id, ...snap.data() });
+  });
+  return () => { unsub(); setLiveStory(null); };
+}, [currentStory?.id, organizationId]);
+
+const activeStory = liveStory || currentStory;
   const hasLikedStory = useMemo(() =>
-    currentStory?.likes?.includes(userId) ?? false,
-    [currentStory, userId]
+    activeStory?.likes?.includes(userId) ?? false,
+    [activeStory, userId]
   );
-  const storyLikeCount = currentStory?.likeCount || currentStory?.likes?.length || 0;
+  const storyLikeCount = activeStory?.likeCount || activeStory?.likes?.length || 0;
 
   useEffect(() => {
     if (visible && storyGroup) {
@@ -384,6 +400,12 @@ const StoryViewer = memo(({
   // ── NEW: handle story like ────────────────────────────────────────────────
   const handleStoryLike = useCallback(async () => {
     if (!currentStory || likingStory) return;
+    // Guard: never allow liking your own story
+    if (currentStory.userId === userId) return;
+    // Guard: never allow double-like (belt-and-suspenders on top of Firestore arrayUnion)
+    if (hasLikedStory === false) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
     setLikingStory(true);
     try {
       const storyRef = doc(db, 'organizations', organizationId, 'stories', currentStory.id);
@@ -397,7 +419,6 @@ const StoryViewer = memo(({
           likes: arrayUnion(userId),
           likeCount: increment(1),
         });
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       }
     } catch (e) {
       console.error('handleStoryLike:', e);
@@ -405,6 +426,82 @@ const StoryViewer = memo(({
       setLikingStory(false);
     }
   }, [currentStory, hasLikedStory, userId, organizationId, likingStory]);
+
+  // ── Reply to story: open DM with story attached ───────────────────────────
+const handleReplyToStory = useCallback(() => {
+    if (!currentStory || isOwnStory) return;
+    stopAnimation();
+    storyProgressAnim.stopAnimation(val => {
+      storyProgressRef.current = val;
+      pausedAtRef.current = val;
+    });
+    setPaused(true);
+    setReplyText('');
+    setShowReplyInput(true);
+  }, [currentStory, isOwnStory, stopAnimation, storyProgressAnim]);
+
+  const handleSendStoryReply = useCallback(async () => {
+    if (!replyText.trim() || sendingReply) return;
+    setSendingReply(true);
+    try {
+      const chatId = await createPrivateChat(userId, currentStory.userId, organizationId);
+      await sendStoryReplyMessage(
+        chatId,
+        userId,
+        `${userProfile.firstName} ${userProfile.lastName}`,
+        userProfile.profilePicture || '',
+        organizationId,
+        currentStory,
+        replyText.trim()
+      );
+      setShowReplyInput(false);
+      setReplyText('');
+      // Close story viewer first, then push PrivateChat on top
+      // This keeps the back stack correct (back from PrivateChat returns to wherever story was opened)
+      onClose();
+      // Use a short delay so the modal fully dismisses before pushing the new screen
+      setTimeout(() => {
+        navigation.push('PrivateChat', {
+          chatId,
+          otherUserId:     currentStory.userId,
+          otherUserName:   currentStory.userName,
+          otherUserAvatar: currentStory.userAvatar || '',
+        });
+      }, 350);
+    } catch (e) {
+      console.error('handleSendStoryReply:', e);
+      Alert.alert('Error', 'Failed to send reply');
+    } finally {
+      setSendingReply(false);
+    }
+  }, [replyText, sendingReply, currentStory, userId, organizationId, userProfile, onClose, navigation]);
+
+  const handleCancelReply = useCallback(() => {
+    setShowReplyInput(false);
+    setReplyText('');
+    setPaused(false);
+    const elapsed = pausedAtRef.current;
+    if (!currentStory) return;
+    if (currentStory.mediaType === 'image') {
+      const remaining = STORY_IMAGE_DURATION * (1 - elapsed);
+      if (remaining > 0) {
+        const anim = Animated.timing(storyProgressAnim, {
+          toValue: 1, duration: remaining, useNativeDriver: false,
+        });
+        animationRef.current = anim;
+        anim.start(({ finished }) => { if (finished) handleNext(); });
+      }
+    } else {
+      const remaining = videoDurationRef.current * (1 - elapsed);
+      if (remaining > 0) {
+        const anim = Animated.timing(storyProgressAnim, {
+          toValue: 1, duration: remaining, useNativeDriver: false,
+        });
+        animationRef.current = anim;
+        anim.start(({ finished }) => { if (finished) handleNext(); });
+      }
+    }
+  }, [currentStory, storyProgressAnim, handleNext]);
 
   // ── NEW: open story likers modal ──────────────────────────────────────────
   const handleShowStoryLikes = useCallback(() => {
@@ -414,7 +511,7 @@ const StoryViewer = memo(({
       storyProgressRef.current = val;
       pausedAtRef.current = val;
     });
-    const likerUids = currentStory.likes || [];
+    const likerUids = activeStory.likes || [];
     const likerList = likerUids.map(uid => viewersMap.get(uid)).filter(Boolean);
     setPaused(true);
     setStoryLikers(likerList);
@@ -482,11 +579,22 @@ const StoryViewer = memo(({
           {currentStory.userAvatar
             ? <ExpoImage source={{ uri: currentStory.userAvatar }} style={{ width: 32, height: 32, borderRadius: 16 }} cachePolicy="memory-disk" />
             : <Avatar.Text size={32} label={currentStory.userName?.split(' ').map(n => n[0]).join('') || 'U'} />}
-          <View style={{ flex: 1, marginLeft: 8 }}>
-            <Text style={sv.name} numberOfLines={1}>{currentStory.userName}</Text>
-            <Text style={sv.time}>{getTimeAgo(currentStory.createdAt)}</Text>
-          </View>
-          {isOwnStory && (
+            <TouchableOpacity
+              style={{ flex: 1, marginLeft: 8 }}
+              onPress={() => {
+                if (currentStory.userId !== userId) {
+                  onClose();
+                  setTimeout(() => {
+                    navigation.navigate('UserProfile', { userId: currentStory.userId });
+                  }, 300);
+                }
+              }}
+              activeOpacity={currentStory.userId !== userId ? 0.7 : 1}
+            >
+              <Text style={sv.name} numberOfLines={1}>{currentStory.userName}</Text>
+              <Text style={sv.time}>{getTimeAgo(currentStory.createdAt)}</Text>
+            </TouchableOpacity>
+          {(isOwnStory || isAdmin) && (
             <TouchableOpacity
               style={sv.eyeButton}
               onPress={handleEyePress}
@@ -515,25 +623,25 @@ const StoryViewer = memo(({
           {currentStory.mediaType === 'video' ? (
             <Video
               ref={videoRef}
-              source={{
-                uri: currentStory.mediaUrl,
-                overrideFileExtensionAndroid: 'mp4',
-              }}
+              source={{ uri: currentStory.mediaUrl }}
               style={sv.media}
               resizeMode="contain"
               isLooping={false}
               useNativeControls={false}
+              shouldPlay={!paused}
+              isMuted={false}
               rate={1.0}
               volume={1.0}
-              shouldPlay={!paused}
               progressUpdateIntervalMillis={100}
-              onReadyForDisplay={(e) => {
+              onLoad={(status) => {
                 setLoading(false);
-                const duration = e?.status?.durationMillis || 10000;
-                startVideoProgress(duration);
+                if (status.durationMillis) {
+                  startVideoProgress(status.durationMillis);
+                }
               }}
               onPlaybackStatusUpdate={(status) => {
-                if (status.isLoaded && status.didJustFinish) handleNext();
+                if (!status.isLoaded) return;
+                if (status.didJustFinish) handleNext();
               }}
               onError={() => handleNext()}
             />
@@ -543,11 +651,12 @@ const StoryViewer = memo(({
               style={sv.media}
               contentFit="contain"
               cachePolicy="memory-disk"
-              transition={100}
+              transition={0}
               onLoad={() => {
                 setLoading(false);
-                if (!paused) startImageProgress();
+                startImageProgress();
               }}
+              onLoadStart={() => setLoading(true)}
               onError={() => handleNext()}
             />
           )}
@@ -579,26 +688,81 @@ const StoryViewer = memo(({
             </TouchableOpacity>
           )}
           <View style={{ flex: 1 }} />
-          {/* Like button — only shown for other people's stories */}
+        {/* Like + Reply buttons — only shown for other people's stories */}
           {!isOwnStory && (
-            <TouchableOpacity
-              style={[sv.storyLikeBtn, hasLikedStory && sv.storyLikeBtnActive]}
-              onPress={handleStoryLike}
-              disabled={likingStory}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            >
-              <MaterialCommunityIcons
-                name={hasLikedStory ? 'heart' : 'heart-outline'}
-                size={22}
-                color={hasLikedStory ? '#EC407A' : '#fff'}
-              />
-              <Text style={[sv.storyLikeBtnText, hasLikedStory && { color: '#EC407A' }]}>
-                {hasLikedStory ? 'Liked' : 'Like'}
-              </Text>
-            </TouchableOpacity>
+            <View style={sv.storyActionRow}>
+              <TouchableOpacity
+                style={sv.storyReplyBtn}
+                onPress={handleReplyToStory}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <MaterialCommunityIcons name="reply" size={22} color="#fff" />
+                <Text style={sv.storyLikeBtnText}>Reply</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[sv.storyLikeBtn, hasLikedStory && sv.storyLikeBtnActive]}
+                onPress={handleStoryLike}
+                disabled={likingStory}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <MaterialCommunityIcons
+                  name={hasLikedStory ? 'heart' : 'heart-outline'}
+                  size={22}
+                  color={hasLikedStory ? '#EC407A' : '#fff'}
+                />
+                <Text style={[sv.storyLikeBtnText, hasLikedStory && { color: '#EC407A' }]}>
+                  {hasLikedStory ? 'Liked' : 'Like'}
+                </Text>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
       </View>
+
+      {/* ── Reply input overlay ── */}
+      {showReplyInput && (
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={sv.replyInputOverlay}
+        >
+          <TouchableOpacity style={sv.replyInputBackdrop} onPress={handleCancelReply} activeOpacity={1} />
+          <View style={sv.replyInputContainer}>
+            <View style={sv.replyInputHeader}>
+              <View style={sv.replyInputPreview}>
+                <MaterialCommunityIcons name="reply" size={14} color="#128C7E" />
+                <Text style={sv.replyInputPreviewText} numberOfLines={1}>
+                  Replying to {currentStory?.userName}'s story
+                </Text>
+              </View>
+              <TouchableOpacity onPress={handleCancelReply} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <MaterialCommunityIcons name="close" size={20} color="#666" />
+              </TouchableOpacity>
+            </View>
+            <View style={sv.replyInputRow}>
+              <RNTextInput
+                value={replyText}
+                onChangeText={setReplyText}
+                placeholder={`Message ${currentStory?.userName}...`}
+                placeholderTextColor="#999"
+                style={sv.replyTextInput}
+                multiline
+                maxLength={500}
+                autoFocus
+              />
+              <TouchableOpacity
+                style={[sv.replySendBtn, (!replyText.trim() || sendingReply) && sv.replySendBtnDisabled]}
+                onPress={handleSendStoryReply}
+                disabled={!replyText.trim() || sendingReply}
+              >
+                {sendingReply
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <MaterialCommunityIcons name="send" size={20} color="#fff" />
+                }
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      )}
 
       {/* Viewers modal */}
       <Modal
@@ -745,6 +909,56 @@ const sv = StyleSheet.create({
     borderColor: '#EC407A',
   },
   storyLikeBtnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  storyActionRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+  },
+  storyReplyBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 7,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: 16, paddingVertical: 9,
+    borderRadius: 22, borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)',
+  },
+  replyInputOverlay: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 50,
+    justifyContent: 'flex-end',
+  },
+  replyInputBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+  },
+  replyInputContainer: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 16,
+  },
+  replyInputHeader: {
+    flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'space-between', marginBottom: 12,
+  },
+  replyInputPreview: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1,
+  },
+  replyInputPreviewText: {
+    fontSize: 13, color: '#128C7E', fontWeight: '600', flex: 1,
+  },
+  replyInputRow: {
+    flexDirection: 'row', alignItems: 'flex-end', gap: 10,
+  },
+  replyTextInput: {
+    flex: 1, backgroundColor: '#f5f5f5', borderRadius: 20,
+    paddingHorizontal: 14, paddingVertical: 10,
+    fontSize: 15, color: '#303030', maxHeight: 100,
+  },
+  replySendBtn: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: '#128C7E', alignItems: 'center', justifyContent: 'center',
+  },
+  replySendBtnDisabled: {
+    backgroundColor: '#ccc',
+  },
 });
 
 // ─── Full-screen Media Viewer Modal ──────────────────────────────────────────
@@ -1241,6 +1455,23 @@ export default function FeedScreen({ navigation }) {
     return unsub;
   }, [navigation, organizationId]);
 
+// ── Auto-open story when navigated from a story reply in chat ─────────────
+  useEffect(() => {
+    const params = navigation.getState()?.routes?.find(r => r.name === 'Feed')?.params;
+    if (!params?.openStoryUserId) return;
+    if (groupedStories.length === 0) return;
+    const group = groupedStories.find(g => g.userId === params.openStoryUserId);
+    if (group) {
+      const storyIndex = params.openStoryId
+        ? Math.max(0, group.stories.findIndex(s => s.id === params.openStoryId))
+        : 0;
+      setSelectedStoryGroup(group);
+      setStoryInitialIndex(storyIndex);
+      setStoryViewerVisible(true);
+      navigation.setParams({ openStoryUserId: undefined, openStoryId: undefined });
+    }
+  }, [navigation, groupedStories]);
+
   // ─── Subscriptions ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (!organizationId) return;
@@ -1599,14 +1830,18 @@ const loadNotificationSettings = async () => {
 
   // ─── Story actions ─────────────────────────────────────────────────────────
   const handleStoryView = useCallback(async (story) => {
-    if (!story?.views?.includes(user.uid)) {
-      try {
-        await updateDoc(doc(db, 'organizations', organizationId, 'stories', story.id), {
-          views: arrayUnion(user.uid), viewCount: increment(1)
-        });
-      } catch (e) { console.error('handleStoryView:', e); }
-    }
-  }, [user.uid, organizationId]);
+  if (!story) return;
+  // Only count if this user has NOT already viewed it
+  const alreadyViewed = Array.isArray(story.views) && story.views.includes(user.uid);
+  if (!alreadyViewed) {
+    try {
+      await updateDoc(doc(db, 'organizations', organizationId, 'stories', story.id), {
+        views: arrayUnion(user.uid),
+        viewCount: increment(1),
+      });
+    } catch (e) { console.error('handleStoryView:', e); }
+  }
+}, [user.uid, organizationId]);
 
   const openStoryGroup = useCallback((group) => {
     setSelectedStoryGroup(group);
@@ -1614,7 +1849,24 @@ const loadNotificationSettings = async () => {
     setStoryViewerVisible(true);
   }, []);
 
-  const closeStoryViewer = useCallback(() => { setStoryViewerVisible(false); }, []);
+  // In FeedScreen, find closeStoryViewer and replace:
+  const closeStoryViewer = useCallback(() => {
+    setStoryViewerVisible(false);
+    const params = navigation.getState()?.routes?.find(r => r.name === 'Feed')?.params;
+    if (params?.returnToChatId) {
+      const chatId = params.returnToChatId;
+      const otherUserId = params.returnToOtherUserId || '';
+      const otherUserName = params.returnToOtherUserName || '';
+      navigation.setParams({
+        returnToChatId: undefined,
+        returnToOtherUserId: undefined,
+        returnToOtherUserName: undefined,
+      });
+      setTimeout(() => {
+        navigation.getParent()?.navigate('PrivateChat', { chatId, otherUserId, otherUserName });
+      }, 300);
+    }
+  }, [navigation]); 
 
   const handleDeleteStory = useCallback(async (story, onUpdated) => {
     if (story.userId !== user.uid && !isAdmin) { Alert.alert('Error', 'You can only delete your own stories'); return; }
@@ -1719,37 +1971,59 @@ const loadNotificationSettings = async () => {
   };
 
   // ─── Share ─────────────────────────────────────────────────────────────────
-  const handleShareToUser = async (otherUser) => {
-    if (!selectedPostForShare) return;
-    try {
-      await addDoc(collection(db, 'organizations', organizationId, 'sharedPosts'), {
-        postId: selectedPostForShare.id,
-        sharedByUserId: user.uid,
-        sharedByUserName: `${userProfile.firstName} ${userProfile.lastName}`,
-        sharedWithUserId: otherUser.uid,
-        sharedWithUserName: `${otherUser.firstName} ${otherUser.lastName}`,
-        sharedAt: serverTimestamp(), viewed: false,
+ const handleShareToUser = async (otherUser) => {
+  if (!selectedPostForShare) return;
+  try {
+    // Create or get existing private chat
+    const { createPrivateChat } = await import('../../services/chatService');
+    const { sendPrivateMessage } = await import('../../services/chatService');
+    
+    const chatId = await createPrivateChat(user.uid, otherUser.uid, organizationId);
+    
+    // Send the post as a special message type
+    const postPreviewText = selectedPostForShare.content
+      ? selectedPostForShare.content.substring(0, 150) + (selectedPostForShare.content.length > 150 ? '...' : '')
+      : 'No caption';
+
+    await sendPrivateMessage(
+      chatId,
+      user.uid,
+      `${userProfile.firstName} ${userProfile.lastName}`,
+      userProfile.profilePicture || '',
+      `📤 Shared a post by ${selectedPostForShare.userName}:\n\n"${postPreviewText}"`,
+      organizationId,
+      'shared_post',
+      selectedPostForShare.media?.[0]?.url || null,
+      null,
+      null
+    );
+
+    // Also store postId in the message so recipient can navigate to it
+    // We'll do this by updating the message right after
+    const { collection: col, query: q, orderBy: ob, limit: lim, getDocs: gd, updateDoc: ud, doc: d } = await import('firebase/firestore');
+    const msgsRef = col(db, 'organizations', organizationId, 'privateChats', chatId, 'messages');
+    const lastMsgQ = q(msgsRef, ob('createdAt', 'desc'), lim(1));
+    const lastMsgSnap = await gd(lastMsgQ);
+    if (!lastMsgSnap.empty) {
+      await ud(lastMsgSnap.docs[0].ref, {
+        sharedPost: {
+          postId: selectedPostForShare.id,
+          postContent: selectedPostForShare.content || '',
+          postAuthor: selectedPostForShare.userName || '',
+          postMedia: selectedPostForShare.media || [],
+          organizationId,
+        }
       });
-      const chatsRef = collection(db, 'organizations', organizationId, 'privateChats');
-      const snap = await getDocs(query(chatsRef, where('participants', 'array-contains', user.uid)));
-      let chatId = snap.docs.find(d => d.data().participants.includes(otherUser.uid))?.id;
-      if (!chatId) {
-        const nc = await addDoc(chatsRef, { participants: [user.uid, otherUser.uid], createdAt: serverTimestamp() });
-        chatId = nc.id;
-      }
-      await addDoc(collection(db, 'organizations', organizationId, 'privateChats', chatId, 'messages'), {
-        text: `Shared a post: ${selectedPostForShare.content?.substring(0, 100)}...`,
-        type: 'shared_post', postId: selectedPostForShare.id,
-        postContent: selectedPostForShare.content, postAuthor: selectedPostForShare.userName,
-        userId: user.uid, userName: `${userProfile.firstName} ${userProfile.lastName}`,
-        createdAt: serverTimestamp(),
-      });
-      await updateDoc(doc(db, 'organizations', organizationId, 'posts', selectedPostForShare.id), { shares: increment(1) });
-      setShowShareModal(false);
-      setSelectedPostForShare(null);
-      Alert.alert('Success', `Post shared with ${otherUser.firstName}!`);
-    } catch (e) { Alert.alert('Error', 'Failed to share post'); }
-  };
+    }
+
+    setShowShareModal(false);
+    setSelectedPostForShare(null);
+    Alert.alert('Sent!', `Post shared with ${otherUser.firstName} via message.`);
+  } catch (e) {
+    console.error('handleShareToUser error:', e);
+    Alert.alert('Error', 'Failed to share post');
+  }
+};
 
   // ─── Notifications ─────────────────────────────────────────────────────────
   const sendNotificationToUser = async (userId, type, postId) => {
@@ -2325,6 +2599,7 @@ const loadNotificationSettings = async () => {
         getTimeAgo={getTimeAgo}
         organizationId={organizationId}
         userProfile={userProfile}
+        navigation={navigation}
       />
 
       <MediaViewerModal
@@ -2612,7 +2887,7 @@ const styles = StyleSheet.create({
   membersChip: { backgroundColor: '#E8EAF6', borderColor: '#5C6BC0', borderWidth: 1 },
   membersText: { color: '#5C6BC0', fontWeight: '600' },
   list: { paddingBottom: 76 },
-  postCard: { marginHorizontal: 16, marginVertical: 6, backgroundColor: '#fff', borderRadius: 16, overflow: 'hidden' },
+  postCard: { marginHorizontal: 16, marginVertical: 6, backgroundColor: '#fff', borderRadius: 16 },
   pinnedPostCard: { borderLeftWidth: 3, borderLeftColor: '#5C6BC0' },
   pinnedBanner: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 11, paddingVertical: 7, backgroundColor: '#E8EAF6' },
   pinnedText: { fontSize: 11, color: '#5C6BC0', fontWeight: '600' },

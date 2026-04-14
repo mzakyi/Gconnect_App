@@ -9,7 +9,8 @@ import { collection, query, onSnapshot, orderBy } from 'firebase/firestore';
 import { db } from '../../../firebase.config';
 
 export default function ChatMembersScreen({ navigation }) {
-  const { organizationId } = useContext(AuthContext); // ✅ pull organizationId
+  const { user } = useContext(AuthContext);
+  const { activeOrgId: organizationId } = useActiveOrg();
   const [members, setMembers] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -31,6 +32,10 @@ export default function ChatMembersScreen({ navigation }) {
         ...doc.data(),
       }));
       setMembers(memberData);
+    }, (error) => {
+      if (error.code !== 'permission-denied') {
+        console.warn('ChatMembers listener error:', error.message);
+      }
     });
 
     return () => unsubscribe();

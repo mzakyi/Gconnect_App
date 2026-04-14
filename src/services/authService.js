@@ -107,13 +107,23 @@ export const signUp = async (email, password, profileData) => {
     console.log('✅ [SIGNUP] Org user doc written');
 
     // ── WRITE TOP-LEVEL USER DOC ───────────────────────────────────────
-    await setDoc(doc(db, 'users', user.uid), {
-      uid: user.uid,
-      email,
-      organizationId: finalOrgId,
-      status,
-      createdAt: serverTimestamp(),
-    });
+  await setDoc(doc(db, 'users', user.uid), {
+    uid: user.uid,
+    email,
+    firstName: userData.firstName || '',
+    lastName: userData.lastName || '',
+    organizationId: finalOrgId,
+    organizationName: finalOrgName,
+
+    // ⭐ IMPORTANT
+    isAdmin,
+    status,
+
+    banned: false,
+    isBanned: false,
+
+    createdAt: serverTimestamp(),
+  });
 
     console.log('✅ [SIGNUP] Top-level user doc written');
 

@@ -1,12 +1,13 @@
+// src/components/OrgSwitcher.js
 import React, { useState, useEffect, useContext } from 'react';
 import {
   View,
   StyleSheet,
   TouchableOpacity,
   Modal,
-  FlatList,
+  Pressable,
 } from 'react-native';
-import { Text, Surface } from 'react-native-paper';
+import { Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { AuthContext } from '../context/AuthContext';
 import { useActiveOrg } from '../context/ActiveOrgContext';
@@ -15,53 +16,88 @@ import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../firebase.config';
 
 export default function OrgSwitcher({ onSwitch, style }) {
-  const { user, userProfile, organizationId } = useContext(AuthContext); // ← organizationId from AUTH
+  const { user, userProfile, organizationId } = useContext(AuthContext);
   const { activeOrgId, switchOrg } = useActiveOrg();
-
 
   const [showModal, setShowModal] = useState(false);
   const [allOrgs, setAllOrgs] = useState([]);
   const [currentOrgName, setCurrentOrgName] = useState('');
 
-  const isSuperAdmin = userProfile?.isSuperAdmin === true;
+  // Any admin (including Super Users that have been demoted in some orgs)
+  // can see the switcher as long as they have more than one org to switch to.
+// Any user who belongs to multiple orgs can switch between them
   const isAdmin = userProfile?.isAdmin === true;
 
   useEffect(() => {
-    if ((!isSuperAdmin && !isAdmin) || !user?.uid || !organizationId) return;
+    if (!user?.uid || !organizationId) return;
     loadOrgs();
-  }, [isSuperAdmin, isAdmin, user?.uid, organizationId]);
-// Replace the entire loadOrgs function and the activeOrg line:
+  }, [user?.uid, organizationId]);
 
   const loadOrgs = async () => {
     try {
+      // ── Home org ──────────────────────────────────────────────────────────
       const currentSnap = await getDoc(doc(db, 'organizations', organizationId));
       const currentName = currentSnap.exists()
         ? currentSnap.data().name || currentSnap.data().organizationName || 'Your Org'
         : 'Your Org';
       setCurrentOrgName(currentName);
 
-      const superOrgs = await getAllAdminOrgsForUser(user.uid);
-      console.log('🏢 superOrgs found:', JSON.stringify(superOrgs)); // ← ADD THIS
+      // Fetch the user's actual isAdmin in their HOME org
+      const homeUserSnap = await getDoc(
+        doc(db, 'organizations', organizationId, 'users', user.uid)
+      );
+      const homeIsAdmin = homeUserSnap.exists()
+        ? homeUserSnap.data()?.isAdmin === true
+        : false;
 
-      const currentOrgEntry = { id: organizationId, name: currentName };
+      // getAllAdminOrgsForUser now returns { id, name, logoUrl, isAdmin }
+      // ── Super User orgs (all orgs ever approved into, including demoted) ─
+      let superOrgs = [];
+      try {
+        superOrgs = await getAllAdminOrgsForUser(user.uid);
+      } catch (e) {
+        console.warn('OrgSwitcher: could not load extra orgs', e.message);
+      }
+
+      // Build the combined list: home org first, then the rest
       const others = superOrgs.filter((o) => o.id !== organizationId);
-      const combined = [currentOrgEntry, ...others];
-      console.log('🏢 allOrgs combined:', JSON.stringify(combined)); // ← ADD THIS
+
+      const combined = [
+        {
+          id: organizationId,
+          name: currentName,
+          isAdmin: homeIsAdmin,
+          isHome: true,
+        },
+        ...others.map((o) => ({ ...o, isHome: false })),
+      ];
+
       setAllOrgs(combined);
     } catch (error) {
       console.error('OrgSwitcher loadOrgs error:', error);
     }
   };
-  // Change this line — use activeOrgId from context, not local state:
+
   const activeOrg = allOrgs.find((o) => o.id === activeOrgId) || allOrgs[0];
 
   const handleSelect = (org) => {
     setShowModal(false);
-    switchOrg(org.id, org.name);          // ← updates ActiveOrgContext globally
-    if (onSwitch) onSwitch(org.id, org.name); // ← still calls prop if provided
+    switchOrg(org.id, org.name);
+    if (onSwitch) onSwitch(org.id, org.name);
   };
-  
+
+  // Only render if there's more than one org to switch between
   if (allOrgs.length <= 1) return null;
+
+  // Role label shown in the list item
+  const getRoleLabel = (org) => {
+    const parts = [];
+    if (org.isHome) parts.push('Home Organization');
+    else parts.push('Member');
+    if (org.isAdmin) parts.push('Admin');
+    return parts.join(' · ');
+  };
+
   return (
     <>
       <TouchableOpacity
@@ -81,67 +117,75 @@ export default function OrgSwitcher({ onSwitch, style }) {
         transparent
         animationType="fade"
         onRequestClose={() => setShowModal(false)}
+        statusBarTranslucent
       >
-        <TouchableOpacity
+        {/* Outer pressable overlay to dismiss */}
+        <Pressable
           style={styles.overlay}
-          activeOpacity={1}
           onPress={() => setShowModal(false)}
         >
-          <Surface style={styles.sheet} elevation={6}>
+          {/* Inner view stops press propagation so tapping sheet doesn't close */}
+          <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
             <Text style={styles.sheetTitle}>Switch Organization</Text>
             <Text style={styles.sheetSubtitle}>
-              Select the organization you want to manage
+              Select the organization you want to view
             </Text>
 
-            <FlatList
-              data={allOrgs}
-              keyExtractor={(item) => item.id}
-              renderItem={({ item }) => {
-                const isActive = item.id === activeOrgId;
-                return (
-                  <TouchableOpacity
-                    style={[styles.orgItem, isActive && styles.orgItemActive]}
-                    onPress={() => handleSelect(item)}
+            {allOrgs.map((item) => {
+              const isActive = item.id === activeOrgId;
+              return (
+                <TouchableOpacity
+                  key={item.id}
+                  style={[styles.orgItem, isActive && styles.orgItemActive]}
+                  onPress={() => handleSelect(item)}
+                  activeOpacity={0.7}
+                >
+                  <View
+                    style={[
+                      styles.orgIcon,
+                      { backgroundColor: isActive ? '#667EEA20' : '#F1F5F9' },
+                    ]}
                   >
-                    <View
+                    <MaterialCommunityIcons
+                      name={item.isHome ? 'home' : 'office-building'}
+                      size={22}
+                      color={isActive ? '#667EEA' : '#94A3B8'}
+                    />
+                  </View>
+                  <View style={styles.orgItemInfo}>
+                    <Text
                       style={[
-                        styles.orgIcon,
-                        { backgroundColor: isActive ? '#667EEA20' : '#F1F5F9' },
+                        styles.orgItemName,
+                        isActive && styles.orgItemNameActive,
                       ]}
                     >
-                      <MaterialCommunityIcons
-                        name={item.id === organizationId ? 'home' : 'office-building'}
-                        size={22}
-                        color={isActive ? '#667EEA' : '#94A3B8'}
-                      />
-                    </View>
-                    <View style={styles.orgItemInfo}>
-                      <Text
-                        style={[
-                          styles.orgItemName,
-                          isActive && styles.orgItemNameActive,
-                        ]}
-                      >
-                        {item.name}
-                      </Text>
+                      {item.name}
+                    </Text>
+                    <View style={styles.roleRow}>
                       <Text style={styles.orgItemRole}>
-                        {item.id === organizationId
-                          ? 'Home Organization · Admin'
-                          : 'Super Admin'}
+                        {getRoleLabel(item)}
                       </Text>
+                      {/* Crown icon only if currently admin in this org */}
+                      {item.isAdmin && (
+                        <MaterialCommunityIcons
+                          name="shield-crown"
+                          size={13}
+                          color="#F59E0B"
+                          style={{ marginLeft: 4 }}
+                        />
+                      )}
                     </View>
-                    {isActive && (
-                      <MaterialCommunityIcons
-                        name="check-circle"
-                        size={22}
-                        color="#667EEA"
-                      />
-                    )}
-                  </TouchableOpacity>
-                );
-              }}
-              scrollEnabled={false}
-            />
+                  </View>
+                  {isActive && (
+                    <MaterialCommunityIcons
+                      name="check-circle"
+                      size={22}
+                      color="#667EEA"
+                    />
+                  )}
+                </TouchableOpacity>
+              );
+            })}
 
             <TouchableOpacity
               style={styles.cancelButton}
@@ -149,8 +193,8 @@ export default function OrgSwitcher({ onSwitch, style }) {
             >
               <Text style={styles.cancelText}>Cancel</Text>
             </TouchableOpacity>
-          </Surface>
-        </TouchableOpacity>
+          </Pressable>
+        </Pressable>
       </Modal>
     </>
   );
@@ -229,6 +273,10 @@ const styles = StyleSheet.create({
   },
   orgItemNameActive: {
     color: '#667EEA',
+  },
+  roleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   orgItemRole: {
     fontSize: 12,

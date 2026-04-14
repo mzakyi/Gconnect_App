@@ -6,6 +6,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
 // Context
 import { AuthContext } from '../context/AuthContext';
+import { useActiveOrg } from '../context/ActiveOrgContext';
 
 // Navigators
 import AuthNavigator from './AuthNavigator';
@@ -62,6 +63,7 @@ const Stack = createNativeStackNavigator();
 
 export default function RootNavigator() {
   const { user, loading, userProfile } = useContext(AuthContext);
+  const { activeOrgIsAdmin } = useActiveOrg();
 
   if (loading) return <LoadingSpinner />;
 
@@ -108,8 +110,9 @@ export default function RootNavigator() {
           <Stack.Screen name="GroupChatScreen" component={GroupChatScreenNew} />
           <Stack.Screen name="GroupInfo" component={GroupInfoScreen} />
 
-          {/* ── ADMIN SCREENS (can REQUEST super admin) ── */}
-          {userProfile?.isAdmin && (
+          {/* ── ADMIN SCREENS ── */}
+          {/* Gated on activeOrgIsAdmin so secondary org admins can access these too */}
+          {(userProfile?.isAdmin || activeOrgIsAdmin) && (
             <>
               <Stack.Screen name="CreateEvent" component={CreateEventScreen} options={{ presentation: 'modal' }} />
               <Stack.Screen name="EditEvent" component={EditEventScreen} />
@@ -119,25 +122,12 @@ export default function RootNavigator() {
               <Stack.Screen name="EditAnnouncement" component={EditAnnouncementScreen} />
               <Stack.Screen name="PendingUsers" component={PendingUsers} options={{ headerShown: true, title: 'Pending Approvals' }} />
               <Stack.Screen name="BannedUsers" component={BannedUsers} options={{ headerShown: true, title: 'Banned Users' }} />
-
-              {/* ✅ Admins can REQUEST super admin */}
-              <Stack.Screen
-                name="PendingSuperAdminRequests"
-                component={PendingSuperAdminRequests}
-                options={{ headerShown: false }}
-              />
+              <Stack.Screen name="PendingSuperAdminRequests" component={PendingSuperAdminRequests} options={{ headerShown: false }} />
             </>
           )}
 
-          {/* ✅ Any admin can access SuperAdmin screen */}
-          {userProfile?.isAdmin && (
-            <>
-              <Stack.Screen
-                name="SuperAdmin"
-                component={SuperAdminScreen}
-              />
-            </>
-          )}
+          {/* ── ANY LOGGED-IN USER can join another org ── */}
+          <Stack.Screen name="SuperAdmin" component={SuperAdminScreen} />
         </>
       ) : (
         <>

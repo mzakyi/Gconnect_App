@@ -1,27 +1,19 @@
 // src/screens/admin/AdminScreen.js
-// CHANGES FROM ORIGINAL:
-//   1. Added OrgSwitcher component in header
-//   2. Added "Super Admin Requests" quick action card with live badge count
-//   3. Added activeOrgId state so super admins can view stats for the selected org
-//   All original functionality is completely preserved.
-
 import React, { useState, useEffect, useContext } from 'react';
 import { useActiveOrg } from '../../context/ActiveOrgContext';
 import { View, StyleSheet, ScrollView, TouchableOpacity, Alert, RefreshControl } from 'react-native';
-import { Text, Card, Surface, Avatar, Chip, FAB } from 'react-native-paper';
+import { Text, Card, Surface, Avatar, Chip, FAB, Button } from 'react-native-paper';
 import { AuthContext } from '../../context/AuthContext';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { collection, onSnapshot, getDocs, query, limit, doc, getDoc } from 'firebase/firestore';
 import { db } from '../../../firebase.config';
-import OrgSwitcher from '../../components/OrgSwitcher';
 import { subscribeToPendingSuperAdminRequests } from '../../services/superAdminService';
 
 export default function AdminScreen({ navigation }) {
   const { user, userProfile } = useContext(AuthContext);
-  const { activeOrgId, activeOrgName, switchOrg } = useActiveOrg();
+  const { activeOrgId, activeOrgName, activeOrgIsAdmin, switchOrg } = useActiveOrg();
 
-  // Use activeOrgId as organizationId throughout this screen
   const organizationId = activeOrgId;
 
   const [stats, setStats] = useState({ totalUsers: 0, pendingUsers: 0, bannedUsers: 0 });
@@ -31,10 +23,10 @@ export default function AdminScreen({ navigation }) {
   const [lastUpdated, setLastUpdated] = useState(null);
   const [pendingSuperAdminCount, setPendingSuperAdminCount] = useState(0);
 
-
-  // When activeOrgId changes (super admin switches org), reload stats
   useEffect(() => {
-    if (!activeOrgId || !userProfile?.isAdmin) return;
+    // Gate on activeOrgIsAdmin — reflects the role in the currently active org,
+    // not just the home org role on userProfile.
+    if (!activeOrgId || !activeOrgIsAdmin) return;
 
     const usersRef = collection(db, 'organizations', activeOrgId, 'users');
     const unsubscribe = onSnapshot(usersRef, (snapshot) => {
@@ -47,13 +39,15 @@ export default function AdminScreen({ navigation }) {
       });
       setStats({ totalUsers: approved, pendingUsers: pending, bannedUsers: banned });
       setLastUpdated(new Date());
-    }, (error) => { console.warn('Error fetching users:', error); });
+    }, (error) => { 
+      if (error.code !== 'permission-denied') {
+        console.warn('Error fetching users:', error);
+      }
+    });
 
     return () => unsubscribe();
-  }, [activeOrgId, userProfile]);
+  }, [activeOrgId, activeOrgIsAdmin]);
 
-
-  // System status check
   useEffect(() => {
     if (!activeOrgId) return;
     async function checkSystemStatus() {
@@ -70,15 +64,13 @@ export default function AdminScreen({ navigation }) {
     checkSystemStatus();
   }, [activeOrgId]);
 
-  // ── NEW: listen for pending super admin requests ─────────────
   useEffect(() => {
-    if (!activeOrgId || !userProfile?.isAdmin) return;
+    if (!activeOrgId || !activeOrgIsAdmin) return;
     const unsub = subscribeToPendingSuperAdminRequests(activeOrgId, (requests) => {
       setPendingSuperAdminCount(requests.length);
     });
     return () => unsub();
-  }, [activeOrgId, userProfile]);
-  // ─────────────────────────────────────────────────────────────
+  }, [activeOrgId, activeOrgIsAdmin]);
 
   const onRefresh = async () => {
     if (!activeOrgId) return;
@@ -95,7 +87,6 @@ export default function AdminScreen({ navigation }) {
     setRefreshing(false);
   };
 
-  // ── Admin actions grid — added Super Admin Requests entry ────
   const adminActions = [
     {
       title: 'Create Event',
@@ -151,23 +142,26 @@ export default function AdminScreen({ navigation }) {
     { label: 'View All Users', icon: 'account-multiple', badge: stats.totalUsers, action: () => navigation.navigate('UsersList') },
     { label: 'Pending Approvals', icon: 'account-clock', badge: stats.pendingUsers, action: () => navigation.navigate('PendingUsers') },
     { label: 'Banned Users', icon: 'account-cancel', badge: stats.bannedUsers, action: () => navigation.navigate('BannedUsers') },
-    // ── NEW entry ──
     {
-      label: 'Super Admin Requests',
-      icon: 'crown',
+      label: 'Join Requests',
+      icon: 'account-plus',
       badge: pendingSuperAdminCount,
       badgeColor: '#F59E0B',
       action: () => navigation.navigate('PendingSuperAdminRequests'),
     },
   ];
 
-  if (!userProfile?.isAdmin) {
+  // ─── Access denied: checks the ACTIVE org's admin status, not home org ───
+  // This means if User A is demoted in Org B and switches to Org B,
+  // they correctly see "Access Denied" there but still get the full
+  // admin panel when they switch back to their home org.
+  if (!activeOrgIsAdmin) {
     return (
       <View style={styles.unauthorizedContainer}>
         <MaterialCommunityIcons name="shield-lock" size={80} color="#ccc" />
         <Text variant="headlineSmall" style={styles.unauthorizedTitle}>Access Denied</Text>
         <Text variant="bodyMedium" style={styles.unauthorizedText}>
-          You don't have permission to access the admin panel.
+          You don't have admin permissions for{activeOrgName ? ` ${activeOrgName}` : ' this organization'}.
         </Text>
       </View>
     );
@@ -187,15 +181,11 @@ export default function AdminScreen({ navigation }) {
             <Text variant="headlineMedium" style={styles.headerTitle}>
               Welcome, {userProfile?.firstName}! 👑
             </Text>
-            {/* ── NEW: show active org name when switched ── */}
             {activeOrgName ? (
               <Text style={styles.activeOrgLabel}>{activeOrgName}</Text>
             ) : null}
           </View>
-
           <View style={styles.headerRight}>
-            {/* ── NEW: OrgSwitcher pill — only visible to super admins ── */}
-          <OrgSwitcher style={styles.orgSwitcherPill} />
             <Avatar.Text
               size={50}
               label={`${userProfile?.firstName?.[0]}${userProfile?.lastName?.[0]}`}
@@ -204,7 +194,6 @@ export default function AdminScreen({ navigation }) {
           </View>
         </View>
 
-        {/* Quick stats */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -368,10 +357,7 @@ const styles = StyleSheet.create({
   headerRight: { alignItems: 'flex-end', gap: 10 },
   headerSubtitle: { color: '#fff', opacity: 0.9 },
   headerTitle: { color: '#fff', fontWeight: 'bold', marginTop: 4 },
-  // ── NEW ──
   activeOrgLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 12, marginTop: 4, fontStyle: 'italic' },
-  orgSwitcherPill: { marginBottom: 4 },
-  // ─────────
   avatar: { backgroundColor: 'rgba(255, 255, 255, 0.3)' },
   quickStatsScroll: { paddingLeft: 20 },
   quickStatsContent: { paddingRight: 20, gap: 12 },
@@ -406,5 +392,5 @@ const styles = StyleSheet.create({
   fab: { position: 'absolute', margin: 16, right: 0, bottom: 0, backgroundColor: '#6366F1' },
   unauthorizedContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f8f9fa', padding: 40 },
   unauthorizedTitle: { marginTop: 20, fontWeight: 'bold', color: '#666' },
-  unauthorizedText: { marginTop: 10, color: '#999', textAlign: 'center' },
+  unauthorizedText: { marginTop: 10, color: '#999', textAlign: 'center', marginBottom: 24 },
 });

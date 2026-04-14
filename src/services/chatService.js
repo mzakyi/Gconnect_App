@@ -226,6 +226,53 @@ export const sendPrivateMessage = async (chatId, userId, userName, userAvatar, t
   }
 };
 
+export const sendStoryReplyMessage = async (
+  chatId, userId, userName, userAvatar,
+  organizationId, story, replyText = ''
+) => {
+  try {
+    if (!organizationId) throw new Error('Organization ID is required');
+    const messagesRef = collection(
+      db, 'organizations', organizationId, 'privateChats', chatId, 'messages'
+    );
+    const messageData = {
+      text: replyText || '↩ Replied to a story',
+      type: 'story_reply',
+      userId,
+      userName,
+      userAvatar: userAvatar || '',
+      createdAt: serverTimestamp(),
+      delivered: false,
+      read: false,
+      reactions: {},
+      replyTo: null,
+      storyPreview: {
+        storyId:    story.id,
+        mediaUrl:   story.mediaUrl,
+        mediaType:  story.mediaType,
+        userName:   story.userName,
+        userId:     story.userId,
+        createdAt:  story.createdAt,
+      },
+    };
+    const messageRef = await addDoc(messagesRef, messageData);
+
+    const chatRef = getPrivateChatDoc(organizationId, chatId);
+    const chatDoc = await getDoc(chatRef);
+    const chatData = chatDoc.data();
+    const otherUserId = chatData.participants.find(id => id !== userId);
+    await updateDoc(chatRef, {
+      lastMessage: replyText || '↩ Replied to a story',
+      lastMessageTime: serverTimestamp(),
+      [`unreadCount.${otherUserId}`]: increment(1),
+    });
+    return messageRef.id;
+  } catch (error) {
+    console.error('Error sending story reply:', error);
+    throw error;
+  }
+};
+
 export const markMessagesAsRead = async (chatId, userId, organizationId) => {
   try {
     if (!organizationId) throw new Error('Organization ID is required');
@@ -595,6 +642,25 @@ export const setGroupChatBackgroundImage = async (groupId, imageUri, organizatio
     return downloadURL;
   } catch (error) {
     console.error('Error setting group background:', error);
+    throw error;
+  }
+};
+
+export const setGroupChatImage = async (groupId, imageUri, organizationId) => {
+  try {
+    if (!organizationId) throw new Error('Organization ID is required');
+    const response = await fetch(imageUri);
+    const blob = await response.blob();
+    const fileName = `group_icon_${Date.now()}.jpg`;
+    const storagePath = `organizations/${organizationId}/group-icons/${groupId}/${fileName}`;
+    const storageRef = ref(storage, storagePath);
+    await uploadBytes(storageRef, blob);
+    const downloadURL = await getDownloadURL(storageRef);
+    const groupRef = getGroupChatDoc(organizationId, groupId);
+    await updateDoc(groupRef, { image: downloadURL });
+    return downloadURL;
+  } catch (error) {
+    console.error('Error setting group image:', error);
     throw error;
   }
 };
@@ -1028,6 +1094,7 @@ export default {
   subscribeToPrivateChats,
   subscribeToPrivateChatMessages,
   sendPrivateMessage,
+  sendStoryReplyMessage,
   markMessagesAsRead,
   updateChatOnlineStatus,
   updateTypingStatus,
@@ -1056,6 +1123,7 @@ export default {
   removeChatBackgroundImage,
   removeGroupChatBackgroundImage,
   renameGroupChat,
+  setGroupChatImage,
   pinMessage,
   unpinMessage,
   createGroupChat,

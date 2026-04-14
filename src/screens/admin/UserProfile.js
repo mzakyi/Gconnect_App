@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { useActiveOrg } from '../../context/ActiveOrgContext';
-import { View, ScrollView, StyleSheet, Alert, KeyboardAvoidingView, Platform, Image } from 'react-native';
+import { View, ScrollView, StyleSheet, Alert, KeyboardAvoidingView, Platform, Image, TouchableOpacity } from 'react-native';
 import { Text, Card, Avatar, Divider, ActivityIndicator, Chip, TextInput, Button } from 'react-native-paper';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../../../firebase.config';
@@ -169,12 +169,14 @@ export default function UserProfile({ route, navigation }) {
         {/* Profile Header */}
         <Card style={styles.headerCard}>
           <Card.Content style={styles.headerContent}>
-            {profilePicture ? (
+          {profilePicture ? (
+            <TouchableOpacity onPress={() => navigation.navigate('ImageViewer', { uri: profilePicture })}>
               <Image 
                 source={{ uri: profilePicture }} 
                 style={styles.profileImage}
               />
-            ) : (
+            </TouchableOpacity>
+          ) : (
               <Avatar.Text
                 size={100}
                 label={avatarLabel}

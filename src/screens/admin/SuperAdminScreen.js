@@ -38,7 +38,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
   const [currentOrgName, setCurrentOrgName] = useState('');
   const [superAdminOrgs, setSuperAdminOrgs] = useState([]);
 
-  // Load current org name and any orgs the user already has super admin access to
+  // Load current org name and any orgs the user already has Super User access to
   useEffect(() => {
     if (!organizationId || !user?.uid) return;
     loadData();
@@ -54,12 +54,12 @@ const { activeOrgId: organizationId } = useActiveOrg();
         setCurrentOrgName(orgData.name || orgData.organizationName || 'Your Organization');
       }
 
-      // Get all orgs this user already has super admin access to
+      // Get all orgs this user already has Super User access to
       const orgs = await getAllAdminOrgsForUser(user.uid);
       // Exclude the current org from the list (they're already a member there)
       setSuperAdminOrgs(orgs.filter((o) => o.id !== organizationId));
     } catch (error) {
-      console.error('Error loading super admin data:', error);
+      console.error('Error loading Super User data:', error);
     } finally {
       setLoadingOrgs(false);
     }
@@ -81,6 +81,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
           lastName: userProfile.lastName,
           profilePicture: userProfile.profilePicture || null,
           orgName: currentOrgName,
+          isAdmin: userProfile.isAdmin || false,
         },
         joinCode.trim(),
         organizationId
@@ -89,7 +90,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
       setJoinCode('');
       Alert.alert(
         'Request Sent! ✅',
-        `Your request to join "${result.targetOrgName}" as a Super Admin has been sent. An admin from that organization will review your request.`,
+        `Your request to join "${result.targetOrgName}" has been sent. An admin from that organization will review your request.`,
         [{ text: 'OK' }]
       );
     } catch (error) {
@@ -116,7 +117,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
             <MaterialCommunityIcons name="arrow-left" size={24} color="#fff" />
           </TouchableOpacity>
           <View style={styles.headerText}>
-            <Text style={styles.headerTitle}>Super Admin</Text>
+            <Text style={styles.headerTitle}>Super User</Text>
             <Text style={styles.headerSubtitle}>
               Manage cross-organization access
             </Text>
@@ -129,8 +130,9 @@ const { activeOrgId: organizationId } = useActiveOrg();
         style={styles.content}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
       >
-        {/* What is Super Admin */}
+        {/* What is Super User */}
         <Card style={styles.infoCard} elevation={2}>
           <Card.Content>
             <View style={styles.infoHeader}>
@@ -139,13 +141,12 @@ const { activeOrgId: organizationId } = useActiveOrg();
                 size={22}
                 color="#667EEA"
               />
-              <Text style={styles.infoTitle}>What is Super Admin?</Text>
+              <Text style={styles.infoTitle}>Join Another Organization</Text>
             </View>
             <Text style={styles.infoText}>
-              As a Super Admin, you can manage multiple organizations with a
-              single login. You'll have full admin control over each organization
-              you're approved for, and can create announcements, events, and
-              posts directed to one or both organizations simultaneously.
+              You can be a member of multiple organizations with a single login.
+              Request to join another organization using their join code. The
+              organization's admin will review your request and decide your role.
             </Text>
           </Card.Content>
         </Card>
@@ -176,7 +177,6 @@ const { activeOrgId: organizationId } = useActiveOrg();
           </Card.Content>
         </Card>
 
-        {/* Already approved orgs */}
         {loadingOrgs ? (
           <ActivityIndicator
             size="small"
@@ -186,7 +186,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
         ) : superAdminOrgs.length > 0 ? (
           <Card style={styles.approvedOrgsCard} elevation={2}>
             <Card.Content>
-              <Text style={styles.sectionLabel}>ORGANIZATIONS YOU ALSO ADMIN</Text>
+              <Text style={styles.sectionLabel}>ORGANIZATIONS YOU'VE JOINED</Text>
               {superAdminOrgs.map((org, index) => (
                 <View key={org.id}>
                   {index > 0 && <Divider style={styles.divider} />}
@@ -194,24 +194,34 @@ const { activeOrgId: organizationId } = useActiveOrg();
                     <View
                       style={[
                         styles.orgIconContainer,
-                        { backgroundColor: '#E8F5E9' },
+                        { backgroundColor: org.isAdmin ? '#E8F5E9' : '#EEF2FF' },
                       ]}
                     >
                       <MaterialCommunityIcons
-                        name="office-building-check"
+                        name={org.isAdmin ? 'office-building-check' : 'office-building'}
                         size={24}
-                        color="#4CAF50"
+                        color={org.isAdmin ? '#4CAF50' : '#667EEA'}
                       />
                     </View>
                     <View style={styles.orgInfo}>
                       <Text style={styles.orgName}>{org.name}</Text>
-                      <Chip
-                        style={styles.superAdminChip}
-                        textStyle={styles.superAdminChipText}
-                        icon="crown"
-                      >
-                        Super Admin
-                      </Chip>
+                      {org.isAdmin ? (
+                        <Chip
+                          style={styles.superAdminChip}
+                          textStyle={styles.superAdminChipText}
+                          icon="shield-crown"
+                        >
+                          Super User
+                        </Chip>
+                      ) : (
+                        <Chip
+                          style={styles.memberChip}
+                          textStyle={styles.memberChipText}
+                          icon="account"
+                        >
+                          Member
+                        </Chip>
+                      )}
                     </View>
                   </View>
                 </View>
@@ -231,8 +241,8 @@ const { activeOrgId: organizationId } = useActiveOrg();
             </View>
 
             <Text style={styles.requestInstructions}>
-              Enter the join code of the organization you want to manage. The
-              organization's admin will review and approve your request.
+              Enter the join code of the organization you want to join. The
+              organization's admin will review your request and decide your role.
             </Text>
 
             <TextInput
@@ -252,10 +262,10 @@ const { activeOrgId: organizationId } = useActiveOrg();
             <View style={styles.stepsContainer}>
               <Text style={styles.stepsTitle}>How it works:</Text>
               {[
-                'Enter the exact join code used by the other organization',
-                'Your request is sent to their admin for approval',
-                'Once approved, you can switch between organizations',
-                'You can create content for one or both organizations',
+                'Enter the exact join code provided by the other organization',
+                'Your request is sent to their admin for review',
+                'Once approved, you\'ll be added as a member or admin',
+                'Switch between your organizations from your profile',
               ].map((step, index) => (
                 <View key={index} style={styles.stepRow}>
                   <View style={styles.stepNumber}>
@@ -327,6 +337,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 16,
+    paddingBottom: 60,
   },
   infoCard: {
     backgroundColor: '#fff',
@@ -396,10 +407,20 @@ const styles = StyleSheet.create({
   superAdminChip: {
     backgroundColor: '#FFF8DC',
     alignSelf: 'flex-start',
-    height: 26,
+    height: 30,
   },
   superAdminChipText: {
     color: '#D97706',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  memberChip: {
+    backgroundColor: '#EEF2FF',
+    alignSelf: 'flex-start',
+    height: 26,
+  },
+  memberChipText: {
+    color: '#667EEA',
     fontSize: 11,
     fontWeight: '700',
   },

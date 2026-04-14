@@ -1,3 +1,4 @@
+// src/screens/admin/UsersList.js
 import React, { useState, useEffect, useContext } from 'react';
 import { useActiveOrg } from '../../context/ActiveOrgContext';
 import { View, StyleSheet, FlatList, TouchableOpacity, Alert, RefreshControl } from 'react-native';
@@ -6,10 +7,11 @@ import { collection, query, where, onSnapshot, doc, updateDoc } from 'firebase/f
 import { db } from '../../../firebase.config';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { AuthContext } from '../../context/AuthContext';
+import { revokeOrgAccess } from '../../services/superAdminService';
 
 export default function UsersList({ navigation }) {
   const { userProfile } = useContext(AuthContext);
-  const { activeOrgId: organizationId } = useActiveOrg();
+  const { activeOrgId: organizationId, activeOrgIsAdmin } = useActiveOrg();
 
   const [users, setUsers] = useState([]);
   const [filteredUsers, setFilteredUsers] = useState([]);
@@ -17,33 +19,33 @@ export default function UsersList({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
   const [menuVisible, setMenuVisible] = useState({});
 
-  const isCurrentUserAdmin = userProfile?.isAdmin;
+  // Use activeOrgIsAdmin so the UI reflects the role in whichever org is active,
+  // not just the home org role stored on userProfile.
+  const isCurrentUserAdmin = activeOrgIsAdmin;
 
   useEffect(() => {
     if (!organizationId) return;
 
-    // ⭐ NEW: Query organization-specific users
     const usersRef = collection(db, 'organizations', organizationId, 'users');
     const q = query(usersRef, where('status', '==', 'approved'));
-    
+
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const approvedUsers = [];
       snapshot.forEach(doc => {
         const data = doc.data();
-        // ONLY filter out users who are currently banned
-        // Include all approved users who are NOT banned
+        // Only exclude currently banned users
         if (data.banned !== true && data.isBanned !== true) {
           approvedUsers.push({ id: doc.id, ...data });
         }
       });
-      
-      // Sort to show admins first, then alphabetically
+
+      // Admins first, then alphabetical
       approvedUsers.sort((a, b) => {
         if (a.isAdmin && !b.isAdmin) return -1;
         if (!a.isAdmin && b.isAdmin) return 1;
         return `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`);
       });
-      
+
       setUsers(approvedUsers);
       setFilteredUsers(approvedUsers);
     });
@@ -77,20 +79,19 @@ export default function UsersList({ navigation }) {
           style: 'destructive',
           onPress: async () => {
             try {
-              // ⭐ NEW: Update in organization path
               const userRef = doc(db, 'organizations', organizationId, 'users', userId);
               await updateDoc(userRef, {
                 banned: true,
                 isBanned: true,
-                bannedAt: new Date().toISOString()
+                bannedAt: new Date().toISOString(),
               });
               Alert.alert('Success', `${userName} has been banned and removed from the users list`);
             } catch (error) {
               Alert.alert('Error', 'Failed to ban user');
               console.error(error);
             }
-          }
-        }
+          },
+        },
       ]
     );
   };
@@ -118,10 +119,16 @@ export default function UsersList({ navigation }) {
     );
   };
 
+  // Uses revokeOrgAccess so that:
+  // - isAdmin + isSuperAdmin are stripped in THIS org only
+  // - User keeps their membership here (can still be seen as a regular member)
+  // - Their home org admin status is untouched
+  // - Top-level isSuperAdmin is updated to reflect whether they're still
+  //   admin anywhere else
   const handleRemoveAdmin = (userId, userName) => {
     Alert.alert(
       'Remove Admin',
-      `Remove admin privileges from ${userName}?`,
+      `Remove admin privileges from ${userName}?\n\nIf they joined via Super User, they'll become a regular member of this organization but will keep access to switch back to their own organization.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -129,11 +136,13 @@ export default function UsersList({ navigation }) {
           style: 'destructive',
           onPress: async () => {
             try {
-              const userRef = doc(db, 'organizations', organizationId, 'users', userId);
-              await updateDoc(userRef, { isAdmin: false });
-              Alert.alert('Done', `${userName} is no longer an admin`);
+              await revokeOrgAccess(userId, organizationId);
+              Alert.alert(
+                'Done',
+                `${userName} is no longer an admin in this organization`
+              );
             } catch (error) {
-              Alert.alert('Error', 'Failed to update user');
+              Alert.alert('Error', error.message || 'Failed to update user');
               console.error(error);
             }
           },
@@ -151,13 +160,13 @@ export default function UsersList({ navigation }) {
     setTimeout(() => setRefreshing(false), 500);
   };
 
-const renderUser = ({ item }) => (
+  const renderUser = ({ item }) => (
     <Card style={styles.userCard}>
       <TouchableOpacity onPress={() => navigation.navigate('UserProfile', { userId: item.id })}>
         <Card.Content>
           <View style={styles.userHeader}>
-            <Avatar.Text 
-              size={50} 
+            <Avatar.Text
+              size={50}
               label={`${item.firstName?.[0]}${item.lastName?.[0]}`}
               style={[styles.avatar, item.isAdmin && styles.adminAvatar]}
             />
@@ -167,13 +176,25 @@ const renderUser = ({ item }) => (
                   {item.firstName} {item.lastName}
                 </Text>
                 {item.isAdmin && (
-                  <Chip 
-                    icon="shield-crown" 
+                  <Chip
+                    icon="shield-crown"
                     style={styles.adminChip}
                     textStyle={styles.adminChipText}
                     compact
                   >
                     Admin
+                  </Chip>
+                )}
+                {/* Show Super User badge if they joined via cross-org access
+                    but only if they still hold admin in this org */}
+                {item.isSuperAdmin && item.isAdmin && (
+                  <Chip
+                    icon="crown"
+                    style={styles.superAdminChip}
+                    textStyle={styles.superAdminChipText}
+                    compact
+                  >
+                    Super
                   </Chip>
                 )}
               </View>
@@ -190,7 +211,7 @@ const renderUser = ({ item }) => (
                 </Text>
               )}
             </View>
-            
+
             <Menu
               visible={menuVisible[item.id]}
               onDismiss={() => toggleMenu(item.id)}
@@ -200,11 +221,11 @@ const renderUser = ({ item }) => (
                 </TouchableOpacity>
               }
             >
-              <Menu.Item 
+              <Menu.Item
                 onPress={() => {
                   toggleMenu(item.id);
                   navigation.navigate('UserProfile', { userId: item.id });
-                }} 
+                }}
                 title="View Profile"
                 leadingIcon="account"
               />
@@ -214,21 +235,21 @@ const renderUser = ({ item }) => (
                 <>
                   <Divider />
                   {!item.isAdmin ? (
-                    <Menu.Item 
+                    <Menu.Item
                       onPress={() => {
                         toggleMenu(item.id);
                         handleMakeAdmin(item.id, `${item.firstName} ${item.lastName}`);
-                      }} 
+                      }}
                       title="Make Admin"
                       leadingIcon="shield-crown"
                       titleStyle={{ color: '#6366F1' }}
                     />
                   ) : (
-                    <Menu.Item 
+                    <Menu.Item
                       onPress={() => {
                         toggleMenu(item.id);
                         handleRemoveAdmin(item.id, `${item.firstName} ${item.lastName}`);
-                      }} 
+                      }}
                       title="Remove Admin"
                       leadingIcon="shield-off"
                       titleStyle={{ color: '#FF9800' }}
@@ -241,11 +262,11 @@ const renderUser = ({ item }) => (
               {isCurrentUserAdmin && (
                 <>
                   <Divider />
-                  <Menu.Item 
+                  <Menu.Item
                     onPress={() => {
                       toggleMenu(item.id);
                       handleBanUser(item.id, `${item.firstName} ${item.lastName}`);
-                    }} 
+                    }}
                     title="Ban User"
                     leadingIcon="cancel"
                     titleStyle={{ color: '#f44336' }}
@@ -259,7 +280,6 @@ const renderUser = ({ item }) => (
     </Card>
   );
 
-  // ⭐ NEW: Show loading if no orgId
   if (!organizationId) {
     return (
       <View style={styles.container}>
@@ -367,6 +387,18 @@ const styles = StyleSheet.create({
   },
   adminChipText: {
     color: '#FF9800',
+    fontSize: 10,
+    fontWeight: '600',
+    lineHeight: 14,
+    marginVertical: 0,
+  },
+  superAdminChip: {
+    backgroundColor: '#FFD700' + '30',
+    height: 26,
+    paddingHorizontal: 4,
+  },
+  superAdminChipText: {
+    color: '#B8860B',
     fontSize: 10,
     fontWeight: '600',
     lineHeight: 14,

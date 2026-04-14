@@ -1,6 +1,6 @@
 // src/screens/admin/CreateAnnouncementScreen.js
 // CHANGES FROM ORIGINAL:
-//   1. Super admins see an "Audience" selector at the top (This org / Other org / Both)
+//   1. Super Users see an "Audience" selector at the top (This org / Other org / Both)
 //   2. When "Both" or "Other org" is selected, the announcement is created in each
 //      selected org via broadcastToOrgs() from superAdminService.
 //   All original functionality is completely preserved.
@@ -71,7 +71,7 @@ export default function CreateAnnouncementScreen({ navigation }) {
   const isSuperAdmin = userProfile?.isSuperAdmin === true;
   // ─────────────────────────────────────────────────────────────
 
-  // ── NEW: load orgs for super admin ───────────────────────────
+  // ── NEW: load orgs for Super User ───────────────────────────
   useEffect(() => {
     if (!isSuperAdmin || !userProfile?.uid || !organizationId) return;
 
@@ -239,7 +239,7 @@ export default function CreateAnnouncementScreen({ navigation }) {
       >
         <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
 
-          {/* ── NEW: Audience selector — only for super admins ── */}
+          {/* ── NEW: Audience selector — only for Super Users ── */}
           {isSuperAdmin && allAdminOrgs.length > 1 && (
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Send To</Text>

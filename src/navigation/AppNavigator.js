@@ -3,6 +3,7 @@ import { Platform, View, Text } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { AuthContext } from '../context/AuthContext';
+import { useActiveOrg } from '../context/ActiveOrgContext';
 import { useBadges } from '../context/BadgeContext';
 import HomeScreen from '../screens/home/HomeScreen';
 import FeedScreen from '../screens/feed/FeedScreen';
@@ -11,10 +12,11 @@ import AnnouncementsScreen from '../screens/announcements/AnnouncementsScreen';
 import ProfileScreen from '../screens/profile/ProfileScreen';
 import AdminScreen from '../screens/admin/AdminScreen';
 import ChatListScreen from '../screens/chat/ChatListScreen';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 
 const Tab = createBottomTabNavigator();
-
+  
 // Badge component
 const TabBarBadge = ({ count }) => {
   if (!count || count === 0) return null;
@@ -47,7 +49,9 @@ const TabBarBadge = ({ count }) => {
 
 export default function AppNavigator() {
   const { userProfile } = useContext(AuthContext);
-  const { badges } = useBadges(); // FIXED: Use 'badges' object
+  const { badges } = useBadges();
+  const { activeOrgIsAdmin } = useActiveOrg();
+  const insets = useSafeAreaInsets();
 
   // Calculate badge counts from the badges object
   const feedBadgeCount = badges.feed || 0;
@@ -64,19 +68,19 @@ export default function AppNavigator() {
         tabBarActiveTintColor: '#5c6bc0',
         tabBarInactiveTintColor: '#999',
         headerShown: false,
-        tabBarStyle: {
-          backgroundColor: '#fff',
-          borderTopWidth: 1,
-          borderTopColor: '#e0e0e0',
-          height: Platform.OS === 'ios' ? 85 : 65,
-          paddingBottom: Platform.OS === 'ios' ? 25 : 10,
-          paddingTop: 8,
-          elevation: 8,
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: -2 },
-          shadowOpacity: 0.1,
-          shadowRadius: 3,
-        },
+      tabBarStyle: {
+        backgroundColor: '#fff',
+        borderTopWidth: 1,
+        borderTopColor: '#e0e0e0',
+        height: Platform.OS === 'ios' ? 50 + insets.bottom : 60 + insets.bottom,
+        paddingBottom: Platform.OS === 'ios' ? insets.bottom : insets.bottom + 4,
+        paddingTop: 8,
+        elevation: 8,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 3,
+      },
         tabBarLabelStyle: {
           fontSize: 12,
           fontWeight: '500',
@@ -178,24 +182,24 @@ export default function AppNavigator() {
         }}
       />
       
-      {/* Admin Tab - Only visible to admins */}
-      {userProfile?.isAdmin && (
-        <Tab.Screen 
-          name="Admin" 
-          component={AdminScreen}
-          options={{
-            headerShown: false,
-            tabBarIcon: ({ color, size, focused }) => (
-              <MaterialCommunityIcons 
-                name="shield-crown" 
-                size={size} 
-                color={color}
-                allowFontScaling={false}
+      {/* Admin Tab - Visible if user is admin in the currently active org */}
+            {activeOrgIsAdmin && (
+              <Tab.Screen 
+                name="Admin" 
+                component={AdminScreen}
+                options={{
+                  headerShown: false,
+                  tabBarIcon: ({ color, size, focused }) => (
+                    <MaterialCommunityIcons 
+                      name="shield-crown" 
+                      size={size} 
+                      color={color}
+                      allowFontScaling={false}
+                    />
+                  ),
+                }}
               />
-            ),
-          }}
-        />
-      )}
+            )}
       <Tab.Screen 
         name="Profile" 
         component={ProfileScreen}

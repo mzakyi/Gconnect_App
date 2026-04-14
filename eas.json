@@ -19,14 +19,14 @@
     "preview": {
       "distribution": "internal",
       "android": {
-        "buildType": "apk"
+        "buildType": "apk"   // ✅ APK is correct for direct install testing
       },
       "channel": "preview"
     },
     "production": {
       "autoIncrement": true,
       "android": {
-        "buildType": "apk"
+        "buildType": "app-bundle"   // ✅ Fixed — AAB required for Play Store
       },
       "channel": "production"
     }

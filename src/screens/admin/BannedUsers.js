@@ -6,9 +6,12 @@ import { db, storage } from '../../../firebase.config';
 import { ref, deleteObject, listAll } from 'firebase/storage';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { AuthContext } from '../../context/AuthContext';
+import { useActiveOrg } from '../../context/ActiveOrgContext';
 
 export default function BannedUsers({ navigation }) {
-  const { organizationId } = useContext(AuthContext);
+  const { organizationId: homeOrgId } = useContext(AuthContext);
+  const { activeOrgId } = useActiveOrg();
+  const organizationId = activeOrgId || homeOrgId;
   const [users, setUsers] = useState([]);
   const [filteredUsers, setFilteredUsers] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -31,6 +34,11 @@ export default function BannedUsers({ navigation }) {
       });
       setUsers(bannedUsers);
       setFilteredUsers(bannedUsers);
+      setLoading(false);
+    }, (error) => {
+      if (error.code !== 'permission-denied') {
+        console.warn('BannedUsers listener error:', error.message);
+      }
       setLoading(false);
     });
 

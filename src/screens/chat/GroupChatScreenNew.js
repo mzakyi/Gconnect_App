@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useContext, useRef, memo } from 'react';
 import { useActiveOrg } from '../../context/ActiveOrgContext';
 import {
-  View, FlatList, StyleSheet, KeyboardAvoidingView, Platform,
+  View, FlatList, StyleSheet, KeyboardAvoidingView, Platform, Keyboard,
   TouchableOpacity, Image, Alert, ImageBackground
 } from 'react-native';
 import { TextInput, IconButton, Text, Avatar, Surface, Modal, Portal, Button } from 'react-native-paper';
@@ -16,6 +16,7 @@ import { useBadges } from '../../context/BadgeContext';
 import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../../firebase.config';
 import { Audio } from 'expo-av';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   subscribeToGroupChatMessages,
   sendGroupChatMessage,
@@ -30,16 +31,11 @@ import {
 import { initiateCall } from '../../services/callService';
 
 // ── Background wrapper — defined OUTSIDE the screen so it never remounts ────
-// Same fix as PrivateChatScreen: keeping this outside prevents React from
-// treating it as a new component on every render, which caused the flicker.
 const ChatBackground = memo(({ backgroundImage, children }) => {
   const [ready, setReady] = useState(!backgroundImage);
 
   useEffect(() => {
-    if (!backgroundImage) {
-      setReady(true);
-      return;
-    }
+    if (!backgroundImage) { setReady(true); return; }
     let cancelled = false;
     Image.prefetch(backgroundImage)
       .then(() => { if (!cancelled) setReady(true); })
@@ -49,58 +45,45 @@ const ChatBackground = memo(({ backgroundImage, children }) => {
 
   if (backgroundImage && ready) {
     return (
-      <ImageBackground
-        source={{ uri: backgroundImage }}
-        style={{ flex: 1 }}
-        resizeMode="cover"
-        fadeDuration={0}
-      >
+      <ImageBackground source={{ uri: backgroundImage }} style={{ flex: 1 }} resizeMode="cover" fadeDuration={0}>
         {children}
       </ImageBackground>
     );
   }
-
-  return (
-    <View style={{ flex: 1, backgroundColor: '#ECE5DD' }}>
-      {children}
-    </View>
-  );
+  return <View style={{ flex: 1, backgroundColor: '#ECE5DD' }}>{children}</View>;
 });
 
 export default function GroupChatScreen({ navigation, route }) {
   const { groupId, groupImage } = route.params;
   const { user, userProfile } = useContext(AuthContext);
-const { activeOrgId: organizationId } = useActiveOrg();
+  const { activeOrgId: organizationId } = useActiveOrg();
   const { refreshBadges } = useBadges();
+  const insets = useSafeAreaInsets();
 
-  const [messages, setMessages]                     = useState([]);
-  const [groupName, setGroupName]                   = useState(route.params.groupName || '');
-  const [inputText, setInputText]                   = useState('');
-  const [sending, setSending]                       = useState(false);
-  const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
-  const [recording, setRecording]                   = useState(null);
-  const [isRecording, setIsRecording]               = useState(false);
-  const [recordingDuration, setRecordingDuration]   = useState(0);
-  const [recordedAudio, setRecordedAudio]           = useState(null);
-  const [showAudioPreview, setShowAudioPreview]     = useState(false);
-  const [audioSound, setAudioSound]                 = useState(null);
-  const [isPlaying, setIsPlaying]                   = useState(false);
-  const [replyingTo, setReplyingTo]                 = useState(null);
-  const [selectedMessage, setSelectedMessage]       = useState(null);
+  const [messages, setMessages]                         = useState([]);
+  const [groupName, setGroupName]                       = useState(route.params.groupName || '');
+  const [inputText, setInputText]                       = useState('');
+  const [sending, setSending]                           = useState(false);
+  const [showAttachmentMenu, setShowAttachmentMenu]     = useState(false);
+  const [recording, setRecording]                       = useState(null);
+  const [isRecording, setIsRecording]                   = useState(false);
+  const [recordingDuration, setRecordingDuration]       = useState(0);
+  const [recordedAudio, setRecordedAudio]               = useState(null);
+  const [showAudioPreview, setShowAudioPreview]         = useState(false);
+  const [audioSound, setAudioSound]                     = useState(null);
+  const [isPlaying, setIsPlaying]                       = useState(false);
+  const [replyingTo, setReplyingTo]                     = useState(null);
+  const [selectedMessage, setSelectedMessage]           = useState(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState(null);
-
-  // ── Initialize from route params immediately to prevent flicker ───────────
-  const [backgroundImage, setBackgroundImage] = useState(
-    route.params?.backgroundImage ?? null
-  );
-
-  const [pinnedMessage, setPinnedMessage]           = useState(null);
-  const [showPinnedBanner, setShowPinnedBanner]     = useState(true);
+  const [backgroundImage, setBackgroundImage]           = useState(route.params?.backgroundImage ?? null);
+  const [pinnedMessage, setPinnedMessage]               = useState(null);
+  const [showPinnedBanner, setShowPinnedBanner]         = useState(true);
+const [keyboardHeight, setKeyboardHeight]             = useState(0);
 
   const flatListRef          = useRef(null);
   const recordingIntervalRef = useRef(null);
-  const prevMessageCountRef  = useRef(0);  
-  const isInitialLoadRef     = useRef(true); 
+  const prevMessageCountRef  = useRef(0);
+  const isInitialLoadRef     = useRef(true);
 
   // ── Live listener for group name + background + pinned message ───────────
   useEffect(() => {
@@ -110,13 +93,11 @@ const { activeOrgId: organizationId } = useActiveOrg();
       if (snap.exists()) {
         const data = snap.data();
         setGroupName(data.name || route.params.groupName || '');
-        // Only update if actually changed to avoid re-renders
-        setBackgroundImage(prev => {
-          const newBg = data.backgroundImage ?? null;
-          return prev === newBg ? prev : newBg;
-        });
+        setBackgroundImage(prev => { const newBg = data.backgroundImage ?? null; return prev === newBg ? prev : newBg; });
         setPinnedMessage(data.pinnedMessage || null);
       }
+    }, (error) => {
+      if (error.code !== 'permission-denied') console.warn('GroupChat group listener error:', error.message);
     });
     return () => unsubscribe();
   }, [organizationId, groupId]);
@@ -124,28 +105,36 @@ const { activeOrgId: organizationId } = useActiveOrg();
   // ── Messages listener ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!organizationId) return;
-    const unsubscribe = subscribeToGroupChatMessages(groupId, (msgs) => {
-      const filtered = msgs.filter(m => !m.deletedFor?.[user.uid]);
-      setMessages(filtered);
-
-      // ✅ FIX: Only scroll on initial load or when a genuinely new message arrives.
-      // Reactions, edits, and other Firestore updates change the same messages array
-      // but do NOT increase its length — we skip scrolling for those.
-      const prevCount = prevMessageCountRef.current;
-      const newCount  = filtered.length;
-
-      if (isInitialLoadRef.current || newCount > prevCount) {
-        setTimeout(() => {
-          flatListRef.current?.scrollToEnd({ animated: !isInitialLoadRef.current });
-        }, 100);
-        isInitialLoadRef.current = false;
-      }
-
-      prevMessageCountRef.current = newCount;
-    }, organizationId);
-    markGroupMessagesAsRead(groupId, user.uid, organizationId).then(() => refreshBadges());
+    let unsubscribe;
+    try {
+      unsubscribe = subscribeToGroupChatMessages(groupId, (msgs) => {
+        const filtered = msgs.filter(m => !m.deletedFor?.[user.uid]);
+        setMessages(filtered);
+        const prevCount = prevMessageCountRef.current;
+        const newCount  = filtered.length;
+        if (isInitialLoadRef.current || newCount > prevCount) {
+          setTimeout(() => flatListRef.current?.scrollToEnd({ animated: !isInitialLoadRef.current }), 100);
+          isInitialLoadRef.current = false;
+        }
+        prevMessageCountRef.current = newCount;
+      }, organizationId);
+    } catch (e) {
+      if (e.code !== 'permission-denied') console.warn('GroupChat messages listener error:', e.message);
+    }
+    markGroupMessagesAsRead(groupId, user.uid, organizationId).then(() => refreshBadges()).catch(() => {});
     return () => { if (unsubscribe) unsubscribe(); };
   }, [groupId, user.uid, organizationId]);
+
+
+useEffect(() => {
+  const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
+    setKeyboardHeight(e.endCoordinates.height);
+  });
+  const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+    setKeyboardHeight(0);
+  });
+  return () => { showSub.remove(); hideSub.remove(); };
+}, []);
 
   useEffect(() => { requestPermissions(); }, []);
 
@@ -154,6 +143,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
     await ImagePicker.requestCameraPermissionsAsync();
     await Audio.requestPermissionsAsync();
   };
+
 
   // ── Media pickers ─────────────────────────────────────────────────────────
   const pickImage = async () => {
@@ -172,9 +162,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
     setShowAttachmentMenu(false);
     try {
       const result = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: true });
-      if (!result.canceled && result.assets?.[0]) {
-        await sendMediaMessage(result.assets[0].uri, 'document', result.assets[0].name);
-      }
+      if (!result.canceled && result.assets?.[0]) await sendMediaMessage(result.assets[0].uri, 'document', result.assets[0].name);
     } catch (error) { console.error('Error picking document:', error); }
   };
 
@@ -182,21 +170,10 @@ const { activeOrgId: organizationId } = useActiveOrg();
     setSending(true);
     try {
       const mediaData = await uploadMediaFile(uri, type, groupId, user.uid, organizationId);
-      await sendGroupChatMessage(
-        groupId, user.uid,
-        `${userProfile.firstName} ${userProfile.lastName}`,
-        userProfile.profilePicture, '',
-        organizationId, type,
-        mediaData.downloadURL,
-        fileName || mediaData.fileName,
-        replyingTo
-      );
+      await sendGroupChatMessage(groupId, user.uid, `${userProfile.firstName} ${userProfile.lastName}`, userProfile.profilePicture, '', organizationId, type, mediaData.downloadURL, fileName || mediaData.fileName, replyingTo);
       setReplyingTo(null);
-    } catch (error) {
-      Alert.alert('Error', 'Failed to send media');
-    } finally {
-      setSending(false);
-    }
+    } catch { Alert.alert('Error', 'Failed to send media'); }
+    finally { setSending(false); }
   };
 
   // ── Voice recording ───────────────────────────────────────────────────────
@@ -204,22 +181,16 @@ const { activeOrgId: organizationId } = useActiveOrg();
     try {
       await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
       const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-      setRecording(recording);
-      setIsRecording(true);
-      setRecordingDuration(0);
+      setRecording(recording); setIsRecording(true); setRecordingDuration(0);
       recordingIntervalRef.current = setInterval(() => setRecordingDuration(prev => prev + 1), 1000);
-    } catch (error) {
-      Alert.alert('Error', 'Failed to start recording');
-    }
+    } catch { Alert.alert('Error', 'Failed to start recording'); }
   };
 
   const stopRecording = async () => {
     if (!recording) return;
-    setIsRecording(false);
-    clearInterval(recordingIntervalRef.current);
+    setIsRecording(false); clearInterval(recordingIntervalRef.current);
     await recording.stopAndUnloadAsync();
-    const uri = recording.getURI();
-    setRecording(null);
+    const uri = recording.getURI(); setRecording(null);
     if (uri) { setRecordedAudio(uri); setShowAudioPreview(true); }
   };
 
@@ -227,27 +198,21 @@ const { activeOrgId: organizationId } = useActiveOrg();
     try {
       if (audioSound) await audioSound.unloadAsync();
       const { sound } = await Audio.Sound.createAsync({ uri: recordedAudio }, { shouldPlay: true });
-      setAudioSound(sound);
-      setIsPlaying(true);
+      setAudioSound(sound); setIsPlaying(true);
       sound.setOnPlaybackStatusUpdate((status) => { if (status.didJustFinish) setIsPlaying(false); });
       await sound.playAsync();
     } catch (error) { console.error('Error playing audio:', error); }
   };
 
-  const stopPlayingAudio = async () => {
-    if (audioSound) { await audioSound.stopAsync(); setIsPlaying(false); }
-  };
+  const stopPlayingAudio = async () => { if (audioSound) { await audioSound.stopAsync(); setIsPlaying(false); } };
 
   const sendRecordedAudio = async () => {
-    setShowAudioPreview(false);
-    await sendMediaMessage(recordedAudio, 'audio');
-    setRecordedAudio(null);
+    setShowAudioPreview(false); await sendMediaMessage(recordedAudio, 'audio'); setRecordedAudio(null);
     if (audioSound) { await audioSound.unloadAsync(); setAudioSound(null); }
   };
 
   const cancelRecordedAudio = async () => {
-    setShowAudioPreview(false);
-    setRecordedAudio(null);
+    setShowAudioPreview(false); setRecordedAudio(null);
     if (audioSound) { await audioSound.unloadAsync(); setAudioSound(null); }
   };
 
@@ -255,24 +220,13 @@ const { activeOrgId: organizationId } = useActiveOrg();
   const handleSend = async () => {
     if (!inputText.trim()) return;
     const messageText = inputText.trim();
-    setInputText('');
-    setSending(true);
+    setInputText(''); setSending(true);
     try {
-      await sendGroupChatMessage(
-        groupId, user.uid,
-        `${userProfile.firstName} ${userProfile.lastName}`,
-        userProfile.profilePicture,
-        messageText, organizationId, 'text', null, null, replyingTo
-      );
+      await sendGroupChatMessage(groupId, user.uid, `${userProfile.firstName} ${userProfile.lastName}`, userProfile.profilePicture, messageText, organizationId, 'text', null, null, replyingTo);
       setReplyingTo(null);
-      // ✅ Scroll after sending for instant feedback; listener also handles it
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
-    } catch (error) {
-      Alert.alert('Error', 'Failed to send message');
-      setInputText(messageText);
-    } finally {
-      setSending(false);
-    }
+    } catch { Alert.alert('Error', 'Failed to send message'); setInputText(messageText); }
+    finally { setSending(false); }
   };
 
   // ── Reactions ─────────────────────────────────────────────────────────────
@@ -280,11 +234,8 @@ const { activeOrgId: organizationId } = useActiveOrg();
     try {
       const message = messages.find(m => m.id === messageId);
       const userReacted = message.reactions?.[emoji]?.includes(user.uid);
-      if (userReacted) {
-        await removeReaction(groupId, messageId, user.uid, emoji, organizationId, true);
-      } else {
-        await addReaction(groupId, messageId, user.uid, emoji, organizationId, true);
-      }
+      if (userReacted) await removeReaction(groupId, messageId, user.uid, emoji, organizationId, true);
+      else await addReaction(groupId, messageId, user.uid, emoji, organizationId, true);
       setSelectedMessage(null);
     } catch (error) { console.error('Error handling reaction:', error); }
   };
@@ -297,12 +248,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
         await unpinMessage(groupId, organizationId);
         Alert.alert('Unpinned', 'Message has been unpinned.');
       } else {
-        await pinMessage(groupId, {
-          id: message.id,
-          text: message.text || getMediaLabel(message.type),
-          userName: message.userName,
-          type: message.type,
-        }, organizationId);
+        await pinMessage(groupId, { id: message.id, text: message.text || getMediaLabel(message.type), userName: message.userName, type: message.type }, organizationId);
         setShowPinnedBanner(true);
         Alert.alert('Pinned', 'Message has been pinned for everyone.');
       }
@@ -319,16 +265,10 @@ const { activeOrgId: organizationId } = useActiveOrg();
       setHighlightedMessageId(messageId);
       flatListRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.5 });
       setTimeout(() => setHighlightedMessageId(null), 2000);
-    } else {
-      Alert.alert('Message not found', 'The original message may have been deleted');
-    }
+    } else { Alert.alert('Message not found', 'The original message may have been deleted'); }
   };
 
-  const formatDuration = (seconds) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
+  const formatDuration = (seconds) => `${Math.floor(seconds / 60)}:${(seconds % 60).toString().padStart(2, '0')}`;
 
   // ── Calls ─────────────────────────────────────────────────────────────────
   const fetchGroupMemberIds = async () => {
@@ -336,56 +276,37 @@ const { activeOrgId: organizationId } = useActiveOrg();
       const groupDoc = await getDoc(doc(db, 'organizations', organizationId, 'groupChats', groupId));
       if (!groupDoc.exists()) return [];
       return (groupDoc.data().members || []).filter(id => id !== user.uid);
-    } catch (e) { return []; }
+    } catch { return []; }
   };
 
   const handleVoiceCall = () => {
     Alert.alert('Start Voice Call', `Start a voice call with ${groupName}?`, [
       { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Call',
-        onPress: async () => {
-          try {
-            const groupMemberIds = await fetchGroupMemberIds();
-            const { callId, roomName } = await initiateCall(
-              user.uid, groupId, 'voice', organizationId,
-              { callerName: `${userProfile.firstName} ${userProfile.lastName}`, callerAvatar: userProfile.profilePicture || '' },
-              { receiverName: groupName, receiverAvatar: groupImage || '' },
-              groupMemberIds
-            );
-            navigation.navigate('VoiceCall', { callId, roomName, otherUserName: groupName, otherUserAvatar: groupImage || null, callType: 'voice', isIncoming: false });
-          } catch (e) { Alert.alert('Error', 'Could not start voice call'); }
-        }
-      }
+      { text: 'Call', onPress: async () => {
+        try {
+          const groupMemberIds = await fetchGroupMemberIds();
+          const { callId, roomName } = await initiateCall(user.uid, groupId, 'voice', organizationId, { callerName: `${userProfile.firstName} ${userProfile.lastName}`, callerAvatar: userProfile.profilePicture || '' }, { receiverName: groupName, receiverAvatar: groupImage || '' }, groupMemberIds);
+          navigation.navigate('VoiceCall', { callId, roomName, otherUserName: groupName, otherUserAvatar: groupImage || null, callType: 'voice', isIncoming: false });
+        } catch { Alert.alert('Error', 'Could not start voice call'); }
+      }}
     ]);
   };
 
   const handleVideoCall = () => {
     Alert.alert('Start Video Call', `Start a video call with ${groupName}?`, [
       { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Call',
-        onPress: async () => {
-          try {
-            const groupMemberIds = await fetchGroupMemberIds();
-            const { callId, roomName } = await initiateCall(
-              user.uid, groupId, 'video', organizationId,
-              { callerName: `${userProfile.firstName} ${userProfile.lastName}`, callerAvatar: userProfile.profilePicture || '' },
-              { receiverName: groupName, receiverAvatar: groupImage || '' },
-              groupMemberIds
-            );
-            navigation.navigate('VideoCall', { callId, roomName, otherUserName: groupName, otherUserAvatar: groupImage || null, callType: 'video', isIncoming: false });
-          } catch (e) { Alert.alert('Error', 'Could not start video call'); }
-        }
-      }
+      { text: 'Call', onPress: async () => {
+        try {
+          const groupMemberIds = await fetchGroupMemberIds();
+          const { callId, roomName } = await initiateCall(user.uid, groupId, 'video', organizationId, { callerName: `${userProfile.firstName} ${userProfile.lastName}`, callerAvatar: userProfile.profilePicture || '' }, { receiverName: groupName, receiverAvatar: groupImage || '' }, groupMemberIds);
+          navigation.navigate('VideoCall', { callId, roomName, otherUserName: groupName, otherUserAvatar: groupImage || null, callType: 'video', isIncoming: false });
+        } catch { Alert.alert('Error', 'Could not start video call'); }
+      }}
     ]);
   };
 
   // ── Message content renderers ─────────────────────────────────────────────
-  const getMediaLabel = (type) => {
-    const labels = { image: '📷 Photo', video: '🎥 Video', audio: '🎤 Voice message', document: '📄 Document' };
-    return labels[type] || 'Media';
-  };
+  const getMediaLabel = (type) => ({ image: '📷 Photo', video: '🎥 Video', audio: '🎤 Voice message', document: '📄 Document' }[type] || 'Media');
 
   const renderMessageContent = (item) => {
     switch (item.type) {
@@ -418,9 +339,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
 
   const renderMessage = ({ item, index }) => {
     const isOwnMessage = item.userId === user.uid;
-    const showAvatar = !isOwnMessage && (
-      index === messages.length - 1 || messages[index + 1]?.userId !== item.userId
-    );
+    const showAvatar = !isOwnMessage && (index === messages.length - 1 || messages[index + 1]?.userId !== item.userId);
     const isPinned = pinnedMessage?.id === item.id;
 
     return (
@@ -434,12 +353,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
               }
             </View>
           )}
-          <View style={[
-            styles.messageBubble,
-            isOwnMessage ? styles.ownMessage : styles.otherMessage,
-            highlightedMessageId === item.id && styles.highlightedMessage,
-            isPinned && styles.pinnedMessageBubble,
-          ]}>
+          <View style={[styles.messageBubble, isOwnMessage ? styles.ownMessage : styles.otherMessage, highlightedMessageId === item.id && styles.highlightedMessage, isPinned && styles.pinnedMessageBubble]}>
             {isPinned && (
               <View style={styles.pinnedIndicatorRow}>
                 <MaterialCommunityIcons name="pin" size={12} color="#128C7E" />
@@ -447,11 +361,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
               </View>
             )}
             {item.replyTo && (
-              <TouchableOpacity
-                style={styles.replyContainer}
-                onPress={() => item.replyTo.id && scrollToMessage(item.replyTo.id)}
-                activeOpacity={0.7}
-              >
+              <TouchableOpacity style={styles.replyContainer} onPress={() => item.replyTo.id && scrollToMessage(item.replyTo.id)} activeOpacity={0.7}>
                 <View style={styles.replyBar} />
                 <View style={styles.replyContent}>
                   <Text style={styles.replyName}>{item.replyTo.userName}</Text>
@@ -485,10 +395,14 @@ const { activeOrgId: organizationId } = useActiveOrg();
     );
   };
 
+  // ── Header height for KAV offset ─────────────────────────────────────────
+  // iOS: offset must equal everything above the KAV (header) so padding math is correct.
+  const headerHeight = insets.top + 60; // 60 = paddingBottom(10) + row height(~50)
+
   return (
     <View style={styles.container}>
-      {/* Header */}
-      <LinearGradient colors={['#128C7E', '#075E54']} style={styles.header}>
+      {/* Header — lives OUTSIDE KeyboardAvoidingView so it never moves */}
+      <LinearGradient colors={['#128C7E', '#075E54']} style={[styles.header, { paddingTop: insets.top + 10 }]}>
         <View style={styles.headerContent}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
             <MaterialCommunityIcons name="arrow-left" size={24} color="#fff" />
@@ -498,33 +412,24 @@ const { activeOrgId: organizationId } = useActiveOrg();
               ? <Avatar.Image size={40} source={{ uri: groupImage }} />
               : <Avatar.Icon size={40} icon="account-group" style={styles.groupAvatar} />
             }
-            <Text style={styles.headerTitle} numberOfLines={1} ellipsizeMode="tail">
-              {groupName}
-            </Text>
+            <Text style={styles.headerTitle} numberOfLines={1} ellipsizeMode="tail">{groupName}</Text>
           </View>
           <View style={styles.headerRight}>
             <IconButton icon="phone"         iconColor="#fff" size={22} onPress={handleVoiceCall} />
             <IconButton icon="video"         iconColor="#fff" size={22} onPress={handleVideoCall} />
-            <IconButton icon="dots-vertical" iconColor="#fff" size={22}
-              onPress={() => navigation.navigate('GroupInfo', { groupId, groupName })} />
+            <IconButton icon="dots-vertical" iconColor="#fff" size={22} onPress={() => navigation.navigate('GroupInfo', { groupId, groupName })} />
           </View>
         </View>
       </LinearGradient>
 
-      {/* Pinned Message Banner */}
+      {/* Pinned Message Banner — outside KAV */}
       {pinnedMessage && showPinnedBanner && (
-        <TouchableOpacity
-          style={styles.pinnedBanner}
-          onPress={() => scrollToMessage(pinnedMessage.id)}
-          activeOpacity={0.85}
-        >
+        <TouchableOpacity style={styles.pinnedBanner} onPress={() => scrollToMessage(pinnedMessage.id)} activeOpacity={0.85}>
           <View style={styles.pinnedBannerLeft}>
             <MaterialCommunityIcons name="pin" size={16} color="#128C7E" />
             <View style={styles.pinnedBannerTextContainer}>
               <Text style={styles.pinnedBannerLabel}>Pinned Message</Text>
-              <Text style={styles.pinnedBannerText} numberOfLines={1}>
-                {pinnedMessage.text}
-              </Text>
+              <Text style={styles.pinnedBannerText} numberOfLines={1}>{pinnedMessage.text}</Text>
             </View>
           </View>
           <TouchableOpacity onPress={() => setShowPinnedBanner(false)} style={styles.pinnedBannerClose}>
@@ -533,7 +438,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
         </TouchableOpacity>
       )}
 
-      {/* Reply preview */}
+      {/* Reply preview — outside KAV */}
       {replyingTo && (
         <Surface style={styles.replyPreview} elevation={2}>
           <View style={styles.replyPreviewContent}>
@@ -547,15 +452,21 @@ const { activeOrgId: organizationId } = useActiveOrg();
         </Surface>
       )}
 
-      {/* Messages + input */}
-      <KeyboardAvoidingView 
-          style={styles.keyboardView} 
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          keyboardVerticalOffset={Platform.OS === 'android' ? 0 : 0}
-        >
-        {/* ✅ ChatBackground is defined outside this component so it never remounts */}
+      {/*
+        ── KeyboardAvoidingView ──────────────────────────────────────────────
+        iOS   → behavior="padding"  pushes the input up by the keyboard height.
+                keyboardVerticalOffset = header height so the math is correct.
+        Android → behavior="height"  shrinks the view; the OS handles the rest.
+                  No offset needed — Android already scrolls the window.
+      */}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+      >
+        {/* Message list with background */}
         <ChatBackground backgroundImage={backgroundImage}>
-       <FlatList
+          <FlatList
             ref={flatListRef}
             data={messages}
             keyExtractor={(item) => item.id}
@@ -577,32 +488,52 @@ const { activeOrgId: organizationId } = useActiveOrg();
           </View>
         )}
 
-        {/* Input bar */}
-        <Surface style={styles.inputContainer} elevation={4}>
-          <IconButton icon="plus-circle" size={28} iconColor="#128C7E" onPress={() => setShowAttachmentMenu(true)} />
-          <View style={styles.inputBox}>
-            <RNTextInput
-              value={inputText}
-              onChangeText={setInputText}
-              placeholder="Type a message..."
-              placeholderTextColor="#999"
-              style={styles.input}
-              multiline
-              maxLength={500}
-            />
+        {/* ── Input bar ────────────────────────────────────────────────────
+            iOS:     paddingBottom = 8 (keyboard handles the gap via KAV padding)
+            Android: paddingBottom = insets.bottom (respects nav bar) + 4 breathing room.
+                     When the software keyboard is up, insets.bottom drops to 0 on most
+                     Android devices, so the bar sits flush just above the keyboard.
+        */}
+      <View
+        style={[
+          styles.inputWrapper,
+          {
+          paddingBottom:
+            Platform.OS === 'ios'
+              ? 8
+              : Math.max(insets.bottom, 8),
+            marginBottom: Platform.OS === 'android' && keyboardHeight > 0
+              ? keyboardHeight
+              : 8, 
+          },
+        ]}
+      >
+          <View style={styles.inputContainer}>
+            <IconButton icon="plus-circle" size={28} iconColor="#128C7E" onPress={() => setShowAttachmentMenu(true)} />
+            <View style={styles.inputBox}>
+              <RNTextInput
+                value={inputText}
+                onChangeText={setInputText}
+                placeholder="Type a message..."
+                placeholderTextColor="#999"
+                style={styles.input}
+                multiline
+                maxLength={500}
+              />
+            </View>
+            {inputText.trim() ? (
+              <TouchableOpacity style={[styles.sendButton, sending && styles.sendButtonDisabled]} onPress={handleSend} disabled={sending}>
+                <MaterialCommunityIcons name="send" size={22} color="#fff" />
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity onPressIn={startRecording} onPressOut={stopRecording} style={styles.micButtonContainer}>
+                <View style={[styles.micButton, isRecording && styles.micButtonRecording]}>
+                  <MaterialCommunityIcons name="microphone" size={28} color="#fff" />
+                </View>
+              </TouchableOpacity>
+            )}
           </View>
-          {inputText.trim() ? (
-            <TouchableOpacity style={[styles.sendButton, sending && styles.sendButtonDisabled]} onPress={handleSend} disabled={sending}>
-              <MaterialCommunityIcons name="send" size={22} color="#fff" />
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity onPressIn={startRecording} onPressOut={stopRecording} style={styles.micButtonContainer}>
-              <View style={[styles.micButton, isRecording && styles.micButtonRecording]}>
-                <MaterialCommunityIcons name="microphone" size={28} color="#fff" />
-              </View>
-            </TouchableOpacity>
-          )}
-        </Surface>
+        </View>
       </KeyboardAvoidingView>
 
       {/* Modals */}
@@ -640,11 +571,7 @@ const { activeOrgId: organizationId } = useActiveOrg();
       </Portal>
 
       <Portal>
-        <Modal
-          visible={!!selectedMessage}
-          onDismiss={() => setSelectedMessage(null)}
-          contentContainerStyle={styles.messageActionModal}
-        >
+        <Modal visible={!!selectedMessage} onDismiss={() => setSelectedMessage(null)} contentContainerStyle={styles.messageActionModal}>
           <View style={styles.messageActions}>
             <View style={styles.quickReactions}>
               {['❤️', '👍', '😂', '😮', '😢', '🙏'].map((emoji) => (
@@ -659,14 +586,8 @@ const { activeOrgId: organizationId } = useActiveOrg();
                 <Text style={styles.actionButtonText}>Reply</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.actionButton} onPress={() => handlePinMessage(selectedMessage)}>
-                <MaterialCommunityIcons
-                  name={pinnedMessage?.id === selectedMessage?.id ? 'pin-off' : 'pin'}
-                  size={20}
-                  color="#128C7E"
-                />
-                <Text style={styles.actionButtonText}>
-                  {pinnedMessage?.id === selectedMessage?.id ? 'Unpin' : 'Pin'}
-                </Text>
+                <MaterialCommunityIcons name={pinnedMessage?.id === selectedMessage?.id ? 'pin-off' : 'pin'} size={20} color="#128C7E" />
+                <Text style={styles.actionButtonText}>{pinnedMessage?.id === selectedMessage?.id ? 'Unpin' : 'Pin'}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -678,20 +599,15 @@ const { activeOrgId: organizationId } = useActiveOrg();
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#ECE5DD' },
-  header: { paddingTop: 50, paddingBottom: 10 },
+  // header paddingTop is now dynamic (insets.top + 10) — set inline above
+  header: { paddingBottom: 10 },
   headerContent: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10 },
   backButton: { padding: 5 },
   headerCenter: { flex: 1, flexDirection: 'row', alignItems: 'center', marginLeft: 5, marginRight: 5 },
   headerTitle: { color: '#fff', fontSize: 16, fontWeight: 'bold', marginLeft: 12, flex: 1 },
   groupAvatar: { backgroundColor: 'rgba(255,255,255,0.3)' },
   headerRight: { flexDirection: 'row', alignItems: 'center' },
-  pinnedBanner: {
-    backgroundColor: '#fff', borderLeftWidth: 4, borderLeftColor: '#128C7E',
-    paddingHorizontal: 14, paddingVertical: 10, flexDirection: 'row',
-    alignItems: 'center', justifyContent: 'space-between',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.07, shadowRadius: 2, elevation: 2,
-  },
+  pinnedBanner: { backgroundColor: '#fff', borderLeftWidth: 4, borderLeftColor: '#128C7E', paddingHorizontal: 14, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.07, shadowRadius: 2, elevation: 2 },
   pinnedBannerLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, gap: 10 },
   pinnedBannerTextContainer: { flex: 1 },
   pinnedBannerLabel: { fontSize: 11, fontWeight: '700', color: '#128C7E', marginBottom: 2 },
@@ -702,17 +618,13 @@ const styles = StyleSheet.create({
   replyBar: { width: 4, backgroundColor: '#128C7E', marginRight: 10, borderRadius: 2, minHeight: 40 },
   replyPreviewName: { fontSize: 14, fontWeight: '700', color: '#128C7E', marginBottom: 4 },
   replyPreviewText: { fontSize: 14, color: '#3B4A54', lineHeight: 20 },
-  keyboardView: { flex: 1 },
   messageList: { padding: 10, flexGrow: 1 },
   messageRow: { flexDirection: 'row', marginVertical: 2, paddingHorizontal: 5 },
   ownMessageRow: { justifyContent: 'flex-end' },
   otherMessageRow: { justifyContent: 'flex-start' },
   avatarContainer: { marginRight: 8, justifyContent: 'flex-end' },
   messageAvatar: { backgroundColor: '#128C7E' },
-  messageBubble: {
-    maxWidth: '75%', padding: 12, borderRadius: 16, marginVertical: 2,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2, elevation: 2,
-  },
+  messageBubble: { maxWidth: '75%', padding: 12, borderRadius: 16, marginVertical: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2, elevation: 2 },
   ownMessage: { backgroundColor: '#DCF8C6', borderBottomRightRadius: 4 },
   otherMessage: { backgroundColor: '#FFFFFF', borderBottomLeftRadius: 4 },
   highlightedMessage: { backgroundColor: '#FFF9C4', borderWidth: 2, borderColor: '#FFD54F' },
@@ -742,12 +654,13 @@ const styles = StyleSheet.create({
   recordingDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#fff' },
   recordingText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
   recordingHint: { color: '#fff', fontSize: 12, opacity: 0.9 },
-  inputContainer: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 8, paddingVertical: 5, backgroundColor: '#fff', marginHorizontal: 8, marginBottom: 8, borderRadius: 25 },
+  inputWrapper: { backgroundColor: '#ECE5DD', paddingHorizontal: 8, paddingTop: 6, position: 'relative' },
+  inputContainer: { flexDirection: 'row', alignItems: 'flex-end', backgroundColor: '#fff', borderRadius: 30, paddingHorizontal: 4, paddingVertical: 4, elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4 },
   inputBox: { flex: 1, backgroundColor: '#f5f5f5', borderRadius: 20, paddingHorizontal: 12, minHeight: 40, maxHeight: 100, justifyContent: 'center' },
   input: { flex: 1, fontSize: 15, color: '#303030', paddingTop: Platform.OS === 'ios' ? 10 : 8, paddingBottom: Platform.OS === 'ios' ? 10 : 8, maxHeight: 100, lineHeight: 20 },
-  sendButton: { width: 45, height: 45, borderRadius: 23, backgroundColor: '#128C7E', alignItems: 'center', justifyContent: 'center', marginLeft: 8 },
+  sendButton: { width: 45, height: 45, borderRadius: 23, backgroundColor: '#128C7E', alignItems: 'center', justifyContent: 'center', marginLeft: 4 },
   sendButtonDisabled: { backgroundColor: '#cccccc' },
-  micButtonContainer: { marginLeft: 8 },
+  micButtonContainer: { marginLeft: 4 },
   micButton: { width: 45, height: 45, borderRadius: 23, alignItems: 'center', justifyContent: 'center', backgroundColor: '#128C7E' },
   micButtonRecording: { backgroundColor: '#F44336' },
   audioPreviewModal: { backgroundColor: '#fff', marginHorizontal: 40, padding: 30, borderRadius: 20, alignItems: 'center' },

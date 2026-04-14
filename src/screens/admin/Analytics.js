@@ -127,6 +127,7 @@ export default function Analytics() {
       postsData = snap.docs.map((doc) => doc.data());
       calculateMetrics();
     });
+    
 
   // ✅ REPLACE WITH
 // In Analytics.js - replace the collectionGroup listener with this:

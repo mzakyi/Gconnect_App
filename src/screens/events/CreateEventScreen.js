@@ -62,7 +62,7 @@ export default function CreateEventScreen({ navigation }) {
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  // Super admin org selector
+  // Super User org selector
   const [allAdminOrgs, setAllAdminOrgs] = useState([]);
   const [selectedOrgIds, setSelectedOrgIds] = useState(organizationId ? [organizationId] : []);
   const isSuperAdmin = userProfile?.isSuperAdmin === true;
@@ -216,7 +216,7 @@ export default function CreateEventScreen({ navigation }) {
       <KeyboardAvoidingView style={styles.keyboardView} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}>
         <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
 
-          {/* Org selector for super admins */}
+          {/* Org selector for Super Users */}
           {isSuperAdmin && allAdminOrgs.length > 1 && (
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Post To</Text>

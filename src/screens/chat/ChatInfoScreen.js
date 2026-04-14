@@ -244,11 +244,13 @@ export default function ChatInfoScreen({ route, navigation }) {
 
       <ScrollView>
         <View style={styles.profileSection}>
-          {otherUserData?.profilePicture ? (
+        {otherUserData?.profilePicture ? (
+          <TouchableOpacity onPress={() => navigation.navigate('ImageViewer', { uri: otherUserData.profilePicture })}>
             <Avatar.Image size={100} source={{ uri: otherUserData.profilePicture }} style={styles.avatar} />
-          ) : (
-            <Avatar.Text size={100} label={otherUserName?.split(' ').map(n => n[0]).join('') || 'U'} style={styles.avatar} />
-          )}
+          </TouchableOpacity>
+        ) : (
+          <Avatar.Text size={100} label={otherUserName?.split(' ').map(n => n[0]).join('') || 'U'} style={styles.avatar} />
+        )}
           <Text style={styles.userName}>{otherUserName}</Text>
           {otherUserData?.occupation && <Text style={styles.userOccupation}>{otherUserData.occupation}</Text>}
           {otherUserData?.online && (

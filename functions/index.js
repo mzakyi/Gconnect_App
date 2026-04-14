@@ -4,32 +4,108 @@ const { logger } = require('firebase-functions/v2');
 const admin = require('firebase-admin');
 
 admin.initializeApp();
+async function removeInvalidTokensFromAllUsers(tokensToRemove) {
+  if (!tokensToRemove || tokensToRemove.length === 0) return;
+
+  const orgsSnapshot = await admin.firestore().collection('organizations').get();
+
+  for (const orgDoc of orgsSnapshot.docs) {
+    const usersSnapshot = await orgDoc.ref.collection('users').get();
+
+    for (const userDoc of usersSnapshot.docs) {
+      const data = userDoc.data();
+      if (!data.pushTokens) continue;
+
+      const filtered = data.pushTokens.filter(
+        t => !tokensToRemove.includes(t)
+      );
+
+      if (filtered.length !== data.pushTokens.length) {
+        await userDoc.ref.update({ pushTokens: filtered });
+      }
+    }
+  }
+
+  logger.log('✅ Removed invalid tokens:', tokensToRemove.length);
+}
+
 
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
 async function sendNotificationsToTokens(tokens, title, body, data) {
-  if (!tokens || tokens.length === 0) { logger.log('No tokens to send to'); return null; }
+  if (!tokens || tokens.length === 0) {
+    logger.log('No tokens to send to');
+    return null;
+  }
+
   const validTokens = [...new Set(tokens.filter(t => t && typeof t === 'string'))];
-  if (validTokens.length === 0) { logger.log('No valid tokens found'); return null; }
+  if (validTokens.length === 0) {
+    logger.log('No valid tokens found');
+    return null;
+  }
 
   const isCall = data && data.type === 'incoming_call';
+
   const messages = validTokens.map(token => ({
-    to: token, title, body,
-    sound: 'default', data: data || {}, priority: 'high',
+    to: token,
+    title,
+    body,
+    sound: 'default',
+    data: data || {},
+    priority: 'high',
     channelId: isCall ? 'calls' : 'default',
-    android: { channelId: isCall ? 'calls' : 'default', priority: 'max', sound: 'default' },
-    apns: { payload: { aps: { sound: 'default', 'content-available': 1 } } },
+    android: {
+      channelId: isCall ? 'calls' : 'default',
+      priority: 'max',
+      sound: 'default',
+    },
+    apns: {
+      payload: {
+        aps: {
+          sound: 'default',
+          'content-available': 1,
+        },
+      },
+    },
   }));
 
   try {
     const response = await fetch('https://exp.host/--/api/v2/push/send', {
       method: 'POST',
-      headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip, deflate', 'Content-Type': 'application/json' },
+      headers: {
+        Accept: 'application/json',
+        'Accept-Encoding': 'gzip, deflate',
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify(messages),
     });
+
     const result = await response.json();
     logger.log('Expo push result:', JSON.stringify(result));
+
+    // 🚨 NEW: REMOVE INVALID TOKENS
+    if (result?.data) {
+      const invalidTokens = [];
+
+      result.data.forEach((item, index) => {
+        if (item.status === 'error') {
+          if (
+            item.details?.error === 'DeviceNotRegistered' ||
+            item.details?.error === 'InvalidCredentials'
+          ) {
+            invalidTokens.push(validTokens[index]);
+          }
+        }
+      });
+
+      if (invalidTokens.length > 0) {
+        logger.log('⚠️ Invalid tokens found:', invalidTokens.length);
+        await removeInvalidTokensFromAllUsers(invalidTokens);
+      }
+    }
+
     return result;
+
   } catch (error) {
     logger.error('Error sending Expo notifications:', error);
     return null;
@@ -253,27 +329,36 @@ exports.onGroupMessageSent = onDocumentCreated(
 
     const tokens = [];
 
-    for (const memberId of groupData.members || []) {
-      if (String(memberId) === String(message.userId)) {
-        logger.log('SKIP member (sender):', memberId);
-        continue;
-      }
+    const memberDocs = await Promise.all(
+    (groupData.members || []).map(memberId =>
+      admin.firestore()
+        .collection('organizations')
+        .doc(orgId)
+        .collection('users')
+        .doc(memberId)
+        .get()
+    )
+  );
 
-      const mutedUntil = groupData.mutedFor?.[memberId];
-      if (mutedUntil === 'forever') continue;
-      if (mutedUntil && new Date(mutedUntil).getTime() > Date.now()) continue;
+  for (let i = 0; i < memberDocs.length; i++) {
+    const memberDoc = memberDocs[i];
+    const memberId = groupData.members[i];
 
-      const memberDoc = await admin.firestore()
-        .collection('organizations').doc(orgId)
-        .collection('users').doc(memberId)
-        .get();
+    if (!memberDoc.exists) continue;
+    if (String(memberId) === String(message.userId)) continue;
 
-      if (!memberDoc.exists) continue;
+    const memberData = memberDoc.data();
 
-      const memberData = memberDoc.data();
-      if (memberData.pushTokens && Array.isArray(memberData.pushTokens)) tokens.push(...memberData.pushTokens);
-      else if (memberData.pushToken) tokens.push(memberData.pushToken);
+    const mutedUntil = groupData.mutedFor?.[memberId];
+    if (mutedUntil === 'forever') continue;
+    if (mutedUntil && new Date(mutedUntil).getTime() > Date.now()) continue;
+
+    if (memberData.pushTokens && Array.isArray(memberData.pushTokens)) {
+      tokens.push(...memberData.pushTokens);
+    } else if (memberData.pushToken) {
+      tokens.push(memberData.pushToken);
     }
+  }
 
     logger.log('Total tokens to notify:', tokens.length);
 

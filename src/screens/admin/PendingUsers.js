@@ -1,13 +1,16 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { View, StyleSheet, FlatList, Alert, RefreshControl } from 'react-native';
 import { Text, Card, Avatar, Button, Searchbar, Chip } from 'react-native-paper';
-import { collection, query, where, getDocs, doc, updateDoc, onSnapshot, deleteDoc } from 'firebase/firestore';
+import { collection, query, where, doc, updateDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../../firebase.config';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { AuthContext } from '../../context/AuthContext'; // ⭐ NEW
+import { AuthContext } from '../../context/AuthContext';
+
 
 export default function PendingUsers({ navigation }) {
-  const { organizationId } = useContext(AuthContext); // ⭐ NEW
+ const { organizationId, userProfile } = useContext(AuthContext);
+
+
   const [users, setUsers] = useState([]);
   const [filteredUsers, setFilteredUsers] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -15,24 +18,32 @@ export default function PendingUsers({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
-    if (!organizationId) return;
+    if (!organizationId || !userProfile?.isAdmin) return;
 
-    // ⭐ NEW: Query organization-specific users
     const usersRef = collection(db, 'organizations', organizationId, 'users');
     const q = query(usersRef, where('status', '==', 'pending'));
     
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const pendingUsers = [];
-      snapshot.forEach(doc => {
-        pendingUsers.push({ id: doc.id, ...doc.data() });
-      });
-      setUsers(pendingUsers);
-      setFilteredUsers(pendingUsers);
-      setLoading(false);
-    });
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const pendingUsers = [];
+        snapshot.forEach(doc => {
+          pendingUsers.push({ id: doc.id, ...doc.data() });
+        });
+        setUsers(pendingUsers);
+        setFilteredUsers(pendingUsers);
+        setLoading(false);
+      },
+      (error) => { // ⭐ NEW error callback
+        if (error.code !== 'permission-denied') {
+          console.warn('PendingUsers listener error:', error.message);
+        }
+        setLoading(false);
+      }
+    );
 
     return () => unsubscribe();
-  }, [organizationId]);
+    }, [organizationId, userProfile?.isAdmin]);
 
   const handleSearch = (query) => {
     setSearchQuery(query);
@@ -47,41 +58,34 @@ export default function PendingUsers({ navigation }) {
     }
   };
 
-const handleApprove = async (userId, userName) => {
-  if (!organizationId) return;
+  const handleApprove = async (userId, userName) => {
+    if (!organizationId) return;
 
-  Alert.alert(
-    'Approve User',
-    `Are you sure you want to approve ${userName}? They will be able to log in immediately.`,
-    [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Approve',
-        onPress: async () => {
-          try {
-            // ✅ Update org-scoped doc (for login + profile display)
-            const userRef = doc(db, 'organizations', organizationId, 'users', userId);
-            await updateDoc(userRef, {
-              status: 'approved',
-              approvedAt: new Date().toISOString()
-            });
+    Alert.alert(
+      'Approve User',
+      `Are you sure you want to approve ${userName}? They will be able to log in immediately.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Approve',
+          onPress: async () => {
+            try {
+              const userRef = doc(db, 'organizations', organizationId, 'users', userId);
+              await updateDoc(userRef, { status: 'approved', approvedAt: new Date().toISOString() });
 
-            // ✅ Update top-level doc (keeps everything in sync)
-            const topLevelRef = doc(db, 'users', userId);
-            await updateDoc(topLevelRef, {
-              status: 'approved',
-            });
+              const topLevelRef = doc(db, 'users', userId);
+              await updateDoc(topLevelRef, { status: 'approved' });
 
-            Alert.alert('Success', `${userName} has been approved and can now log in`);
-          } catch (error) {
-            Alert.alert('Error', 'Failed to approve user');
-            console.error(error);
+              Alert.alert('Success', `${userName} has been approved and can now log in`);
+            } catch (error) {
+              Alert.alert('Error', 'Failed to approve user');
+              console.error(error);
+            }
           }
         }
-      }
-    ]
-  );
-};
+      ]
+    );
+  };
 
   const handleReject = async (userId, userName) => {
     if (!organizationId) return;
@@ -96,11 +100,9 @@ const handleApprove = async (userId, userName) => {
           style: 'destructive',
           onPress: async () => {
             try {
-              // Delete from org-scoped path
               const userRef = doc(db, 'organizations', organizationId, 'users', userId);
               await deleteDoc(userRef);
 
-              // Update top-level doc status to rejected so they can't log in
               const topLevelRef = doc(db, 'users', userId);
               await updateDoc(topLevelRef, { status: 'rejected' });
 
@@ -120,81 +122,57 @@ const handleApprove = async (userId, userName) => {
     setTimeout(() => setRefreshing(false), 500);
   };
 
-  const renderUser = ({ item }) => (
-    <Card style={styles.userCard}>
-      <Card.Content>
-        <View style={styles.userHeader}>
-          <Avatar.Text 
-            size={50} 
-            label={`${item.firstName?.[0] || '?'}${item.lastName?.[0] || '?'}`}
-            style={styles.avatar}
-          />
-          <View style={styles.userInfo}>
-            <Text variant="titleMedium" style={styles.userName}>
-              {item.firstName} {item.lastName}
-            </Text>
-            <Text variant="bodySmall" style={styles.userEmail}>{item.email}</Text>
-            {item.location && (
-              <View style={styles.locationRow}>
-                <MaterialCommunityIcons name="map-marker" size={14} color="#666" />
-                <Text variant="bodySmall" style={styles.locationText}>{item.location}</Text>
-              </View>
-            )}
-            {item.age && (
-              <Text variant="bodySmall" style={styles.userAge}>Age: {item.age}</Text>
-            )}
-          </View>
-          <Chip style={styles.pendingChip} textStyle={styles.chipText}>
-            Pending
-          </Chip>
-        </View>
-
-        {item.occupation && (
-          <View style={styles.infoSection}>
-            <Text variant="bodySmall" style={styles.infoLabel}>Occupation:</Text>
-            <Text variant="bodySmall" style={styles.infoText}>{item.occupation}</Text>
-          </View>
-        )}
-
-        {item.bio && (
-          <View style={styles.infoSection}>
-            <Text variant="bodySmall" style={styles.infoLabel}>Bio:</Text>
-            <Text variant="bodySmall" style={styles.bio} numberOfLines={3}>
-              {item.bio}
-            </Text>
-          </View>
-        )}
-
-        {item.createdAt && (
-          <Text variant="bodySmall" style={styles.createdAt}>
-            Registered: {new Date(item.createdAt.toDate ? item.createdAt.toDate() : item.createdAt).toLocaleDateString()}
+const renderUser = ({ item }) => (
+  <Card style={styles.userCard}>
+    <Card.Content>
+      <View style={styles.userHeader}>
+        <Avatar.Text 
+          size={50} 
+          label={`${item.firstName?.[0] || '?'}${item.lastName?.[0] || '?'}`}
+          style={styles.avatar}
+        />
+        <View style={styles.userInfo}>
+          <Text variant="titleMedium" style={styles.userName}>
+            {item.firstName} {item.lastName}
           </Text>
-        )}
-
-        <View style={styles.actions}>
-          <Button 
-            mode="contained" 
-            onPress={() => handleApprove(item.id, `${item.firstName} ${item.lastName}`)}
-            style={styles.approveButton}
-            icon="check"
-          >
-            Approve
-          </Button>
-          <Button 
-            mode="outlined" 
-            onPress={() => handleReject(item.id, `${item.firstName} ${item.lastName}`)}
-            style={styles.rejectButton}
-            textColor="#f44336"
-            icon="close"
-          >
-            Reject
-          </Button>
+          <Text variant="bodySmall" style={styles.userEmail}>{item.email}</Text>
+          {item.location && (
+            <View style={styles.locationRow}>
+              <MaterialCommunityIcons name="map-marker" size={14} color="#666" />
+              <Text variant="bodySmall" style={styles.locationText}>{item.location}</Text>
+            </View>
+          )}
+          {item.age && (
+            <Text variant="bodySmall" style={styles.userAge}>Age: {item.age}</Text>
+          )}
         </View>
-      </Card.Content>
-    </Card>
-  );
+        <Chip style={styles.pendingChip} textStyle={styles.chipText}>
+          Pending
+        </Chip>
+      </View>
 
-  // ⭐ NEW: Show loading if no orgId
+      {/* ✅ ADD THESE BUTTONS */}
+      <View style={styles.actions}>
+        <Button
+          mode="contained"
+          style={styles.approveButton}
+          onPress={() => handleApprove(item.id, `${item.firstName} ${item.lastName}`)}
+        >
+          Approve
+        </Button>
+        <Button
+          mode="outlined"
+          style={styles.rejectButton}
+          textColor="#f44336"
+          onPress={() => handleReject(item.id, `${item.firstName} ${item.lastName}`)}
+        >
+          Reject
+        </Button>
+      </View>
+    </Card.Content>
+  </Card>
+);
+
   if (!organizationId) {
     return (
       <View style={styles.container}>
@@ -212,18 +190,10 @@ const handleApprove = async (userId, userName) => {
         style={styles.searchBar}
       />
 
-      <View style={styles.statsRow}>
-        <MaterialCommunityIcons name="account-clock" size={20} color="#FF9800" />
-        <Text style={styles.statsText}>{filteredUsers.length} pending approval(s)</Text>
-      </View>
-
       {filteredUsers.length === 0 ? (
         <View style={styles.emptyContainer}>
           <MaterialCommunityIcons name="account-check" size={80} color="#ccc" />
           <Text variant="titleMedium" style={styles.emptyTitle}>No Pending Users</Text>
-          <Text variant="bodyMedium" style={styles.emptyText}>
-            {searchQuery ? 'No users match your search' : 'All registration requests have been reviewed'}
-          </Text>
         </View>
       ) : (
         <FlatList
@@ -239,6 +209,8 @@ const handleApprove = async (userId, userName) => {
     </View>
   );
 }
+
+// styles remain unchanged...
 
 const styles = StyleSheet.create({
   container: {

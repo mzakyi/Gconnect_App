@@ -40,13 +40,29 @@ export default function ChatListScreen({ navigation }) {
   const [groupChats, setGroupChats] = useState([]);
   const [menuVisible, setMenuVisible] = useState({});
 
-  useEffect(() => {
+useEffect(() => {
     if (!user?.uid || !organizationId) return;
-    const unsubscribe = subscribeToPrivateChats(user.uid, setPrivateChats, organizationId);
-    const unsubscribeGroups = subscribeToUserGroupChats(user.uid, setGroupChats, organizationId);
+
+    let unsubscribe;
+    let unsubscribeGroups;
+
+    try {
+      unsubscribe = subscribeToPrivateChats(user.uid, setPrivateChats, organizationId);
+    } catch (e) {
+      if (e.code !== 'permission-denied') console.warn('ChatList private chats error:', e.message);
+    }
+
+    try {
+      unsubscribeGroups = subscribeToUserGroupChats(user.uid, setGroupChats, organizationId);
+    } catch (e) {
+      if (e.code !== 'permission-denied') console.warn('ChatList group chats error:', e.message);
+    }
+
     return () => {
       if (unsubscribe) unsubscribe();
       if (unsubscribeGroups) unsubscribeGroups();
+      setPrivateChats([]);
+      setGroupChats([]);
     };
   }, [user?.uid, organizationId]);
 

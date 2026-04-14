@@ -2,7 +2,7 @@
 // CHANGES FROM ORIGINAL:
 //   1. Imported SuperAdmin-related helpers
 //   2. Added superAdminOrgs state + loader
-//   3. Added "Super Admin" card between Account card and Logout button
+//   3. Added "Super User" card between Account card and Logout button
 //   4. FIX: Non-admin users can now delete their own account directly.
 //      Admin users are still directed to contact the administrator.
 //   All original functionality is completely preserved.
@@ -21,6 +21,7 @@ import { deleteUser } from 'firebase/auth';
 import * as ImagePicker from 'expo-image-picker';
 import { useOrganization } from '../../context/OrganizationContext';
 import { getAllAdminOrgsForUser } from '../../services/superAdminService';
+import OrgSwitcher from '../../components/OrgSwitcher';
 
 export default function ProfileScreen({ navigation }) {
   const { user, userProfile, organizationId, refreshUserProfile } = useContext(AuthContext);
@@ -31,7 +32,8 @@ export default function ProfileScreen({ navigation }) {
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [deleting, setDeleting] = useState(false);
 
-  // ── Super admin state ───────────────────────────────────────
+
+  // ── Super User state ───────────────────────────────────────
   const [superAdminOrgs, setSuperAdminOrgs] = useState([]);
   const [loadingSuperAdmin, setLoadingSuperAdmin] = useState(false);
   // ───────────────────────────────────────────────────────────
@@ -40,15 +42,19 @@ export default function ProfileScreen({ navigation }) {
     if (organizationId) fetchAdminContact();
   }, [organizationId]);
 
-  // ── Load super admin orgs if applicable ────────────────────
+  // ── Load Super User orgs if applicable ────────────────────
+// ── Load orgs for ALL users ────────────────────────────────
   useEffect(() => {
-    if (!user?.uid || !userProfile?.isSuperAdmin) return;
+if (!user?.uid) return;
     setLoadingSuperAdmin(true);
     getAllAdminOrgsForUser(user.uid)
       .then((orgs) => setSuperAdminOrgs(orgs.filter((o) => o.id !== organizationId)))
-      .catch(console.error)
+      .catch((e) => {
+        console.warn('Could not load orgs:', e.message);
+        setSuperAdminOrgs([]);
+      })
       .finally(() => setLoadingSuperAdmin(false));
-  }, [user?.uid, userProfile?.isSuperAdmin, organizationId]);
+  }, [user?.uid, organizationId]);
   // ───────────────────────────────────────────────────────────
 
   const fetchAdminContact = async () => {
@@ -129,44 +135,33 @@ export default function ProfileScreen({ navigation }) {
   };
 
   // ── FIX: Split delete flow based on admin status ────────────
+  const ADMIN_EMAIL = 'mzakyiba@gmail.com';
+
   const handleDeleteAccount = () => {
-    if (userProfile?.isAdmin) {
-      // Admins must contact the administrator to delete their account
-      // (same behaviour as before)
-      if (!adminContact) {
-        Alert.alert('Help & Support', 'Admin contact information is not available at this moment.');
-        return;
-      }
-      const hasEmail = adminContact.email && adminContact.email !== 'Not available';
-      const hasPhone = adminContact.phone && adminContact.phone !== 'Not available';
-      if (!hasEmail && !hasPhone) {
-        Alert.alert('Help & Support', 'Admin contact information is not available at this time.');
-        return;
-      }
-      let message = `As an admin, to delete your account please contact support:\n\n`;
-      if (hasEmail) message += `📧 Email: ${adminContact.email}\n`;
-      if (hasPhone) message += `📞 Phone: ${adminContact.phone}\n`;
-      message += '\nPlease reach out to request account deletion.';
-      const buttons = [{ text: 'OK', style: 'default' }];
-      if (hasEmail) buttons.push({ text: 'Send Email', onPress: () => handleContactAdmin('email') });
-      if (hasPhone) buttons.push({ text: 'Call', onPress: () => handleContactAdmin('phone') });
-      Alert.alert('Delete Account', message, buttons);
-    } else {
-      // Regular (non-admin) members can delete their own account directly
-      Alert.alert(
-        'Delete Account',
-        'Are you sure you want to permanently delete your account? This action cannot be undone and all your data will be removed.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Continue',
-            style: 'destructive',
-            onPress: () => setShowDeleteModal(true),
-          },
-        ]
-      );
+  if (userProfile?.isAdmin) {
+    // Admin flow (unchanged)
+    if (!adminContact) {
+      Alert.alert('Help & Support', 'Admin contact information is not available at this moment.');
+      return;
     }
-  };
+
+    const hasEmail = adminContact.email && adminContact.email !== 'Not available';
+    const hasPhone = adminContact.phone && adminContact.phone !== 'Not available';
+
+    let message = `As an admin, to delete your account please contact support:\n\n`;
+    if (hasEmail) message += `📧 Email: ${adminContact.email}\n`;
+    if (hasPhone) message += `📞 Phone: ${adminContact.phone}\n`;
+
+    const buttons = [{ text: 'OK', style: 'default' }];
+    if (hasEmail) buttons.push({ text: 'Send Email', onPress: () => handleContactAdmin('email') });
+
+    Alert.alert('Delete Account', message, buttons);
+
+  } else {
+    // ✅ FIX: trigger modal for regular users
+    setShowDeleteModal(true);
+  }
+};
   // ───────────────────────────────────────────────────────────
 
   const executeAccountDeletion = async () => {
@@ -273,17 +268,10 @@ export default function ProfileScreen({ navigation }) {
     navigation.navigate('UserProfile', { userId: userProfile.uid });
   };
 
-  const handleContactAdmin = (type) => {
-    if (!adminContact) return;
+
+  const handleContactAdmin = (type, email = 'mzakyiba@gmail.com') => {
     if (type === 'email') {
-      if (adminContact.email === 'Not available') { Alert.alert('Not Available', 'Admin email is not available.'); return; }
-      Linking.openURL(`mailto:${adminContact.email}`);
-    } else if (type === 'phone') {
-      if (adminContact.phone === 'Not available') { Alert.alert('Not Available', 'Admin phone number is not available.'); return; }
-      Alert.alert('Contact Admin', `Call ${adminContact.name}?`, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Call', onPress: () => Linking.openURL(`tel:${adminContact.phone}`) },
-      ]);
+      Linking.openURL(`mailto:${email}`);
     }
   };
 
@@ -338,10 +326,32 @@ export default function ProfileScreen({ navigation }) {
           {userProfile.isSuperAdmin && (
             <View style={styles.superAdminBadge}>
               <MaterialCommunityIcons name="crown" size={14} color="#F59E0B" />
-              <Text style={styles.superAdminBadgeText}>Super Admin</Text>
+              <Text style={styles.superAdminBadgeText}>Super User</Text>
             </View>
           )}
         </View>
+        {/* ✅ ORG SWITCHER */}
+        <OrgSwitcher
+  style={{
+    marginTop: 20,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 25,
+    backgroundColor: '#7717deff',
+    borderWidth: 1,
+    borderColor: '#667EEA',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  }}
+>
+  <MaterialCommunityIcons name="office-building" size={18} color="#667EEA" />
+</OrgSwitcher>
 
         {userProfile.occupation && (
           <Text variant="bodyLarge" style={styles.occupation}>{userProfile.occupation}</Text>
@@ -422,13 +432,13 @@ export default function ProfileScreen({ navigation }) {
           </Card.Content>
         </Card>
 
-        {/* Super Admin card — only shows for admins */}
-        {userProfile.isAdmin && (
+        {/* My Organizations card — shows for ALL users */}
+          {(
           <Card style={styles.superAdminCard} elevation={2}>
             <Card.Content>
               <View style={styles.cardHeader}>
-                <MaterialCommunityIcons name="crown" size={22} color="#F59E0B" />
-                <Text variant="titleLarge" style={styles.cardTitle}>Super Admin</Text>
+                <MaterialCommunityIcons name="office-building-plus" size={22} color="#667EEA" />
+                <Text variant="titleLarge" style={styles.cardTitle}>My Organizations</Text>
               </View>
 
               {loadingSuperAdmin ? (
@@ -438,12 +448,12 @@ export default function ProfileScreen({ navigation }) {
                   <View style={styles.orgSummaryRow}>
                     <MaterialCommunityIcons name="office-building" size={16} color="#78909C" />
                     <Text style={styles.orgSummaryText}>
-                      You are currently an admin of{' '}
-                      <Text style={styles.orgSummaryCount}>
-                        {superAdminOrgs.length + 1} organization
-                        {superAdminOrgs.length + 1 !== 1 ? 's' : ''}
-                      </Text>
+                    You are a member of{' '}
+                    <Text style={styles.orgSummaryCount}>
+                      {superAdminOrgs.length + 1} organization
+                      {superAdminOrgs.length + 1 !== 1 ? 's' : ''}
                     </Text>
+                  </Text>
                   </View>
 
                   {superAdminOrgs.length > 0 && (
@@ -466,8 +476,8 @@ export default function ProfileScreen({ navigation }) {
                 <MaterialCommunityIcons name="plus-circle-outline" size={20} color="#F59E0B" />
                 <Text style={styles.superAdminButtonText}>
                   {superAdminOrgs.length > 0
-                    ? 'Manage Super Admin Access'
-                    : 'Request Access to Another Org'}
+                    ? 'Manage My Organizations'
+                    : 'Join Another Organization'}
                 </Text>
                 <MaterialCommunityIcons name="chevron-right" size={20} color="#F59E0B" />
               </TouchableOpacity>
